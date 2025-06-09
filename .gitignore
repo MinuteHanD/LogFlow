@@ -1,0 +1,22 @@
+# Go
+bin/
+*.exe
+*.log
+*.out
+*.test
+*.tmp
+
+# VSCode or JetBrains IDEs
+.vscode/
+.idea/
+
+# Dependency directories (if any vendored)
+vendor/
+
+# Docker
+*.pid
+*.sock
+
+# OS
+.DS_Store
+Thumbs.db
