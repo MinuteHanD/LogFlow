@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -13,7 +14,6 @@ import (
 )
 
 const (
-	KafkaBrokers  = "localhost:9092"
 	InputTopic    = "raw_logs"
 	OutputTopic   = "parsed_logs"
 	ConsumerGroup = "parser-group"
@@ -27,27 +27,32 @@ type StructuredLog struct {
 }
 
 func main() {
-	log.Println("Starting consumer group...")
+	log.Println("Starting parser service...")
+
+	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
+	if kafkaBrokers == "" {
+		log.Fatal("KAFKA_BROKERS environment variable not set")
+	}
+	brokers := strings.Split(kafkaBrokers, ",")
 
 	config := sarama.NewConfig()
 	config.Version = sarama.V2_8_0_0
 	config.Consumer.Group.Rebalance.Strategy = sarama.BalanceStrategyRoundRobin
 	config.Consumer.Offsets.Initial = sarama.OffsetOldest
 
-	consumerGroup, err := sarama.NewConsumerGroup([]string{KafkaBrokers}, ConsumerGroup, config)
+	consumerGroup, err := sarama.NewConsumerGroup(brokers, ConsumerGroup, config)
 	if err != nil {
 		log.Fatalf("Failed to create consumer group: %v", err)
 	}
 	defer consumerGroup.Close()
 
-	producer, err := newProducer()
+	producer, err := newProducer(brokers)
 	if err != nil {
 		log.Fatalf("Failed to create producer: %v", err)
 	}
 	defer producer.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-
 	handler := &logHandler{
 		producer: producer,
 		ready:    make(chan bool),
@@ -69,23 +74,24 @@ func main() {
 		}
 	}()
 
-	<-handler.ready // Wait until the consumer has connected and is ready.
-	log.Println("Sarama consumer up and running! Waiting for messages...")
+	<-handler.ready
+	log.Println("Parser consumer is up and running!")
 
 	sigterm := make(chan os.Signal, 1)
 	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
 	<-sigterm
-	log.Println("terminating: via signal")
+
+	log.Println("Termination signal received. Shutting down gracefully...")
 	cancel()
 	wg.Wait()
 }
 
-func newProducer() (sarama.SyncProducer, error) {
+func newProducer(brokers []string) (sarama.SyncProducer, error) {
 	config := sarama.NewConfig()
 	config.Producer.Return.Successes = true
 	config.Producer.RequiredAcks = sarama.WaitForAll
 	config.Version = sarama.V2_8_0_0
-	return sarama.NewSyncProducer([]string{KafkaBrokers}, config)
+	return sarama.NewSyncProducer(brokers, config)
 }
 
 type logHandler struct {
@@ -93,43 +99,43 @@ type logHandler struct {
 	ready    chan bool
 }
 
-func (handler *logHandler) Setup(sarama.ConsumerGroupSession) error {
-	close(handler.ready)
+func (h *logHandler) Setup(_ sarama.ConsumerGroupSession) error {
+	close(h.ready)
 	return nil
 }
 
-func (handler *logHandler) Cleanup(sarama.ConsumerGroupSession) error {
+func (h *logHandler) Cleanup(_ sarama.ConsumerGroupSession) error {
 	return nil
 }
 
-func (handler *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for message := range claim.Messages() {
-		log.Printf("Received message from topic %s: %s", message.Topic, string(message.Value))
+		log.Printf("Received message on topic %s: %s", message.Topic, string(message.Value))
 
 		var logData StructuredLog
-
 		if err := json.Unmarshal(message.Value, &logData); err != nil {
-			log.Printf("Failed to unmarshal log: %v. Skipping.", err)
+			log.Printf("Invalid JSON, skipping: %v", err)
 			session.MarkMessage(message, "")
 			continue
 		}
 
 		cleanLog, err := json.Marshal(logData)
 		if err != nil {
-			log.Printf("Failed to marshal clean log: %v. Skipping.", err)
+			log.Printf("Failed to re-marshal log: %v", err)
 			session.MarkMessage(message, "")
 			continue
 		}
 
-		msg := &sarama.ProducerMessage{
+		producerMsg := &sarama.ProducerMessage{
 			Topic: OutputTopic,
 			Value: sarama.ByteEncoder(cleanLog),
 		}
-		_, _, err = handler.producer.SendMessage(msg)
+
+		_, _, err = h.producer.SendMessage(producerMsg)
 		if err != nil {
-			log.Printf("Failed to send parsed message: %v", err)
+			log.Printf("Failed to send parsed log to Kafka: %v", err)
 		} else {
-			log.Printf("Successfully parsed and sent message to topic %s", OutputTopic)
+			log.Printf("Successfully forwarded parsed log to topic %s", OutputTopic)
 		}
 
 		session.MarkMessage(message, "")

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   kafka:
     image: apache/kafka:latest
@@ -9,17 +7,22 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: 'broker,controller'
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://localhost:9092'
-      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://kafka:9093'
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
+
       KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
       KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
-      KAFKA_CLUSTER_ID: 'QUlewMpcRaWiF8wiuU1HXw' 
-
-      
+      KAFKA_CLUSTER_ID: 'QUlewMpcRaWiF8wiuU1HXw'
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
@@ -39,6 +42,43 @@ services:
       - elasticsearch
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+
+  ingestor:
+    build:
+      context: .
+      dockerfile: ingestor/Dockerfile
+    ports:
+      - "8081:8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+
+  parser:
+    build:
+      context: .
+      dockerfile: parser/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy   
+      elasticsearch:
+        condition: service_started
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+    restart: on-failure
+
+  storage-writer:
+    build:
+      context: .
+      dockerfile: storage-writer/Dockerfile
+    depends_on:
+      - kafka
+      - elasticsearch
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
 
 volumes:
   kafka_data:

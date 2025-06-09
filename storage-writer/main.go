@@ -6,41 +6,62 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/elastic/go-elasticsearch/v8"
 )
 
 const (
-	KafkaBrokers  = "localhost:9092"
 	InputTopic    = "parsed_logs"
 	ConsumerGroup = "storage-writer-group"
-	ESAddress     = "http://localhost:9200"
+	IndexName     = "logs"
 )
 
 func main() {
+	log.Println("Starting storage writer...")
+
+	kafkaEnv := os.Getenv("KAFKA_BROKERS")
+	esEnv := os.Getenv("ELASTICSEARCH_URL")
+	if kafkaEnv == "" || esEnv == "" {
+		log.Fatalf("Environment variables KAFKA_BROKERS and ELASTICSEARCH_URL must be set")
+	}
+
 	esClient, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: []string{ESAddress},
+		Addresses: []string{esEnv},
 	})
 	if err != nil {
-		log.Fatalf("Error creating the Elasticsearch client: %s", err)
+		log.Fatalf("Error creating Elasticsearch client: %v", err)
 	}
-	log.Println("Successfully connected to Elasticsearch")
+	log.Println("Connected to Elasticsearch successfully")
 
 	config := sarama.NewConfig()
-	config.Version = sarama.V2_8_1_0
+	config.Version = sarama.V2_8_0_0
 	config.Consumer.Group.Rebalance.Strategy = sarama.BalanceStrategyRoundRobin
 	config.Consumer.Offsets.Initial = sarama.OffsetOldest
 
-	consumerGroup, err := sarama.NewConsumerGroup([]string{KafkaBrokers}, ConsumerGroup, config)
+	brokers := strings.Split(kafkaEnv, ",")
+
+	var consumerGroup sarama.ConsumerGroup
+	for i := 0; i < 10; i++ {
+		consumerGroup, err = sarama.NewConsumerGroup(brokers, ConsumerGroup, config)
+		if err == nil {
+			break
+		}
+		log.Printf("Kafka not ready (%v), retrying in 5s...", err)
+		time.Sleep(5 * time.Second)
+	}
 	if err != nil {
-		log.Fatalf("Failed to create consumer group: %v", err)
+		log.Fatalf("Failed to create consumer group after retries: %v", err)
 	}
 	defer consumerGroup.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	handler := &logStorageHandler{
 		esClient: esClient,
 		ready:    make(chan bool),
@@ -48,7 +69,6 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
-
 	go func() {
 		defer wg.Done()
 		for {
@@ -63,12 +83,13 @@ func main() {
 	}()
 
 	<-handler.ready
-	log.Println("Storage Writer is up and running! Waiting for parsed logs...")
+	log.Println("Storage Writer is running! Waiting for messages...")
 
 	sigterm := make(chan os.Signal, 1)
 	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
 	<-sigterm
-	log.Println("terminating: via signal")
+
+	log.Println("Termination signal received. Shutting down gracefully...")
 	cancel()
 	wg.Wait()
 }
@@ -78,12 +99,12 @@ type logStorageHandler struct {
 	ready    chan bool
 }
 
-func (handler *logStorageHandler) Setup(sarama.ConsumerGroupSession) error {
+func (handler *logStorageHandler) Setup(_ sarama.ConsumerGroupSession) error {
 	close(handler.ready)
 	return nil
 }
 
-func (handler *logStorageHandler) Cleanup(sarama.ConsumerGroupSession) error {
+func (handler *logStorageHandler) Cleanup(_ sarama.ConsumerGroupSession) error {
 	return nil
 }
 
@@ -92,21 +113,22 @@ func (handler *logStorageHandler) ConsumeClaim(session sarama.ConsumerGroupSessi
 		log.Printf("Received parsed log from topic %s", message.Topic)
 
 		res, err := handler.esClient.Index(
-			"logs",
+			IndexName,
 			bytes.NewReader(message.Value),
 			handler.esClient.Index.WithContext(context.Background()),
 		)
 		if err != nil {
-			log.Printf("Error getting response from Elasticsearch: %s", err)
+			log.Printf("Error sending to Elasticsearch: %v", err)
+			session.MarkMessage(message, "")
 			continue
 		}
-		defer res.Body.Close()
 
 		if res.IsError() {
-			log.Printf("Error indexing document: %s", res.String())
+			log.Printf("Elasticsearch indexing error: %s", res.String())
 		} else {
-			log.Printf("Successfully indexed document to 'logs' index")
+			log.Printf("Successfully indexed document to '%s'", IndexName)
 		}
+		res.Body.Close()
 
 		session.MarkMessage(message, "")
 	}

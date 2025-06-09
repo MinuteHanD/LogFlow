@@ -3,15 +3,18 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/IBM/sarama"
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	KafkaTopic   = "raw_logs"
-	KafkaBrokers = "localhost:9092"
+	KafkaTopic = "raw_logs"
 )
+
+var KafkaBrokers = os.Getenv("KAFKA_BROKERS")
 
 func main() {
 	config := sarama.NewConfig()
@@ -19,7 +22,10 @@ func main() {
 	config.Producer.RequiredAcks = sarama.WaitForAll
 	config.Version = sarama.V2_8_0_0
 
-	producer, err := sarama.NewSyncProducer([]string{KafkaBrokers}, config)
+	KafkaBrokers := os.Getenv("KAFKA_BROKERS")
+	brokers := strings.Split(KafkaBrokers, ",")
+	producer, err := sarama.NewSyncProducer(brokers, config)
+
 	if err != nil {
 		log.Fatalf("Failed to start Sarama producer: %v", err)
 	}
