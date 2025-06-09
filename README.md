@@ -27,9 +27,9 @@ A microservice-based log ingestion pipeline written in Go that processes logs th
    ```
 
 
-3. Send a test log using the provided script:
+3. Send some test logs using the provided script:
    ```bash
-   ./send-test-log.sh --level info --service test-service --message "Testing the pipeline"
+   ./send-logs.sh
    ```
 
    Or send a custom log using curl:
