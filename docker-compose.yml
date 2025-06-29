@@ -33,6 +33,12 @@ services:
       - xpack.security.enabled=false
     volumes:
       - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      
 
   kibana:
     image: docker.elastic.co/kibana/kibana:8.14.0
@@ -74,8 +80,10 @@ services:
       context: .
       dockerfile: storage-writer/Dockerfile
     depends_on:
-      - kafka
-      - elasticsearch
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
     environment:
       - KAFKA_BROKERS=kafka:9092
       - ELASTICSEARCH_URL=http://elasticsearch:9200
