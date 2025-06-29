@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/IBM/sarama"
 )
@@ -19,11 +20,130 @@ const (
 	ConsumerGroup = "parser-group"
 )
 
-type StructuredLog struct {
-	Level     string `json:"level"`
-	Service   string `json:"service"`
-	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
+type IncomingLogEntry struct {
+	Timestamp string            `json:"timestamp"`
+	Level     string            `json:"level"`
+	Message   string            `json:"message"`
+	Service   string            `json:"service,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+}
+
+type ParsedLog struct {
+	ID               string            `json:"id"`
+	Timestamp        time.Time         `json:"timestamp"`
+	TimestampMs      int64             `json:"timestamp_ms"`
+	Level            string            `json:"level"`
+	Service          string            `json:"service"`
+	Message          string            `json:"message"`
+	MessageHash      string            `json:"message_hash"`
+	Metadata         map[string]string `json:"metadata"`
+	ProcessedAt      string            `json:"processed_at"`
+	ProcessorVersion string            `json:"processor_version"`
+}
+
+type LogProcessor struct {
+	version string
+}
+
+func NewLogProcessor() *LogProcessor {
+	return &LogProcessor{
+		version: "1.0.0",
+	}
+}
+
+func (p *LogProcessor) ProcessLog(raw IncomingLogEntry) (*ParsedLog, error) {
+	id := generateSimpleID()
+
+	parsedTime, timestampMs, err := p.normalizeTimestamp(raw.Timestamp)
+	if err != nil {
+		return nil, err
+	}
+
+	normalizedLevel := p.normalizeLogLevel(raw.Level)
+
+	service := raw.Service
+	if service == "" {
+		service = "unknown"
+	}
+
+	metadata := raw.Metadata
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
+
+	metadata["original_level"] = raw.Level
+	if raw.Service == "" {
+		metadata["service_defaulted"] = "true"
+	}
+
+	messageHash := generateMessageHash(raw.Message)
+
+	return &ParsedLog{
+		ID:               id,
+		Timestamp:        parsedTime,
+		TimestampMs:      timestampMs,
+		Level:            normalizedLevel,
+		Service:          service,
+		Message:          raw.Message,
+		MessageHash:      messageHash,
+		Metadata:         metadata,
+		ProcessedAt:      time.Now().UTC().Format(time.RFC3339),
+		ProcessorVersion: p.version,
+	}, nil
+}
+
+func (p *LogProcessor) normalizeTimestamp(timestamp string) (time.Time, int64, error) {
+	if t, err := time.Parse(time.RFC3339, timestamp); err == nil {
+		return t.UTC(), t.UnixMilli(), nil
+	}
+
+	formats := []string{
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05.000Z",
+		"2006-01-02 15:04:05",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, timestamp); err == nil {
+			return t.UTC(), t.UnixMilli(), nil
+		}
+	}
+
+	log.Printf("Warning: Could not parse timestamp %s, defaulting to current time", timestamp)
+	now := time.Now().UTC()
+	return now, now.UnixMilli(), nil
+}
+
+func (p *LogProcessor) normalizeLogLevel(level string) string {
+	upperLevel := strings.ToUpper(level)
+
+	levelMap := map[string]string{
+		"DEBUG":   "DEBUG",
+		"INFO":    "INFO",
+		"WARN":    "WARN",
+		"WARNING": "WARN",
+		"ERROR":   "ERROR",
+		"FATAL":   "FATAL",
+		"PANIC":   "FATAL",
+	}
+	if normalized, exists := levelMap[upperLevel]; exists {
+		return normalized
+	}
+
+	log.Printf("Warning: Unknown log level %s, defaulting to INFO", level)
+	return "INFO"
+}
+
+func generateSimpleID() string {
+	return strings.ReplaceAll(time.Now().Format("20060102-150405.000000"), ".", "-")
+}
+
+func generateMessageHash(message string) string {
+	hash := 0
+	for _, char := range message {
+		hash = hash*31 + int(char)
+	}
+	return string(rune(hash))
 }
 
 func main() {
@@ -53,9 +173,13 @@ func main() {
 	defer producer.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
+
+	processor := NewLogProcessor()
+
 	handler := &logHandler{
-		producer: producer,
-		ready:    make(chan bool),
+		producer:  producer,
+		processor: processor,
+		ready:     make(chan bool),
 	}
 
 	wg := &sync.WaitGroup{}
@@ -81,7 +205,7 @@ func main() {
 	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
 	<-sigterm
 
-	log.Println("Termination signal received. Shutting down gracefully...")
+	log.Println("Termination signal received. Shutting down")
 	cancel()
 	wg.Wait()
 }
@@ -95,12 +219,13 @@ func newProducer(brokers []string) (sarama.SyncProducer, error) {
 }
 
 type logHandler struct {
-	producer sarama.SyncProducer
-	ready    chan bool
+	producer  sarama.SyncProducer
+	processor *LogProcessor
+	ready     chan bool
 }
 
 func (h *logHandler) Setup(_ sarama.ConsumerGroupSession) error {
-	close(h.ready)
+	close(h.ready) //unblock
 	return nil
 }
 
@@ -110,35 +235,45 @@ func (h *logHandler) Cleanup(_ sarama.ConsumerGroupSession) error {
 
 func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for message := range claim.Messages() {
-		log.Printf("Received message on topic %s: %s", message.Topic, string(message.Value))
+		log.Printf("Received message on topic %s", message.Topic)
 
-		var logData StructuredLog
-		if err := json.Unmarshal(message.Value, &logData); err != nil {
-			log.Printf("Invalid JSON, skipping: %v", err)
+		var incomingLog IncomingLogEntry
+		if err := json.Unmarshal(message.Value, &incomingLog); err != nil {
+			log.Printf("Failed to unmarshal incoming log: %v", err)
+			log.Printf("Raw message; %s", string(message.Value))
 			session.MarkMessage(message, "")
 			continue
 		}
 
-		cleanLog, err := json.Marshal(logData)
+		parsedLog, err := h.processor.ProcessLog(incomingLog)
 		if err != nil {
-			log.Printf("Failed to re-marshal log: %v", err)
+			log.Printf("Failed to process log: %v", err)
+			session.MarkMessage(message, "")
+			continue
+		}
+
+		enrichedLogBytes, err := json.Marshal(parsedLog)
+		if err != nil {
+			log.Printf("Failed to marshal processed log: %v", err)
 			session.MarkMessage(message, "")
 			continue
 		}
 
 		producerMsg := &sarama.ProducerMessage{
 			Topic: OutputTopic,
-			Value: sarama.ByteEncoder(cleanLog),
+			Value: sarama.ByteEncoder(enrichedLogBytes),
 		}
 
-		_, _, err = h.producer.SendMessage(producerMsg)
+		partition, offset, err := h.producer.SendMessage(producerMsg)
 		if err != nil {
-			log.Printf("Failed to send parsed log to Kafka: %v", err)
+			log.Printf("Failed to send processed log to kafka: %v", err)
 		} else {
-			log.Printf("Successfully forwarded parsed log to topic %s", OutputTopic)
+			log.Printf("Successfully sent processed log to topic %s (partition: %d, offset: %d)",
+				OutputTopic, partition, offset)
 		}
 
 		session.MarkMessage(message, "")
 	}
+
 	return nil
 }

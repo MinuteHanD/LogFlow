@@ -20,3 +20,4 @@ vendor/
 # OS
 .DS_Store
 Thumbs.db
+log-pipeline.code-workspace
