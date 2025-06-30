@@ -21,3 +21,4 @@ vendor/
 .DS_Store
 Thumbs.db
 log-pipeline.code-workspace
+repomix-output.xml

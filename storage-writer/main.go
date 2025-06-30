@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	InputTopic    = "parsed_logs"
-	ConsumerGroup = "storage-writer-group"
-	IndexPrefix   = "logs"
+	InputTopic          = "parsed_logs"
+	ConsumerGroup       = "storage-writer-group"
+	ElasticsearchDLQTopic = "parsed_logs_dlq" // Dead-Letter Queue topic for Elasticsearch failures
+	IndexPrefix         = "logs"
 )
 
 type ParsedLog struct {
@@ -230,6 +231,13 @@ func main() {
 	}
 	defer consumerGroup.Close()
 
+	// Create a producer for sending messages to the DLQ
+	producer, err := newProducer(brokers)
+	if err != nil {
+		log.Fatalf("Failed to create producer for DLQ: %v", err)
+	}
+	defer producer.Close()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -237,6 +245,7 @@ func main() {
 
 	handler := &logStorageHandler{
 		processor: processor,
+		producer:  producer, // Pass the producer to the handler
 		ready:     make(chan bool),
 	}
 
@@ -267,8 +276,52 @@ func main() {
 	wg.Wait()
 }
 
+// newProducer creates a new Sarama SyncProducer for sending messages.
+func newProducer(brokers []string) (sarama.SyncProducer, error) {
+	config := sarama.NewConfig()
+	config.Producer.Return.Successes = true
+	config.Producer.RequiredAcks = sarama.WaitForAll
+	config.Version = sarama.V2_8_0_0
+	return sarama.NewSyncProducer(brokers, config)
+}
+
+// sendToDLQ sends a message to the Dead-Letter Queue for Elasticsearch failures.
+// It adds metadata about the failure, such as the error message and the original topic.
+func sendToDLQ(producer sarama.SyncProducer, originalMessage *sarama.ConsumerMessage, processingError error) {
+	dlqMessage := &sarama.ProducerMessage{
+		Topic: ElasticsearchDLQTopic,
+		Value: sarama.ByteEncoder(originalMessage.Value), // The original message content
+		Headers: []sarama.RecordHeader{
+			{
+				Key:   []byte("error"),
+				Value: []byte(processingError.Error()),
+			},
+			{
+				Key:   []byte("original_topic"),
+				Value: []byte(originalMessage.Topic),
+			},
+			{
+				Key:   []byte("original_partition"),
+				Value: []byte(fmt.Sprintf("%d", originalMessage.Partition)),
+			},
+			{
+				Key:   []byte("original_offset"),
+				Value: []byte(fmt.Sprintf("%d", originalMessage.Offset)),
+			},
+		},
+	}
+
+	_, _, err := producer.SendMessage(dlqMessage)
+	if err != nil {
+		log.Printf("CRITICAL: Failed to send message to Elasticsearch DLQ. Topic: %s. Error: %v", ElasticsearchDLQTopic, err)
+	} else {
+		log.Printf("Message sent to Elasticsearch DLQ topic %s due to error: %v", ElasticsearchDLQTopic, processingError)
+	}
+}
+
 type logStorageHandler struct {
 	processor *LogStorageProcessor
+	producer  sarama.SyncProducer // Add producer to handler
 	ready     chan bool
 }
 
@@ -287,8 +340,16 @@ func (handler *logStorageHandler) ConsumeClaim(session sarama.ConsumerGroupSessi
 
 		if err := handler.processor.ProcessAndStore(message.Value); err != nil {
 			log.Printf("Failed to process and store log: %v", err)
+
+			// Send the failed message to the Dead-Letter Queue
+			sendToDLQ(handler.producer, message, err)
+
+			// Mark the original message as processed so we don't try it again
+			session.MarkMessage(message, "")
+			continue
 		}
 
+		// If processing and storing was successful, mark the message as processed
 		session.MarkMessage(message, "")
 	}
 
