@@ -29,7 +29,7 @@ A microservice-based log ingestion pipeline written in Go that processes logs th
 
 3. Send some test logs using the provided script:
    ```bash
-   ./send-logs.sh
+   ./send_all_logs.sh
    ```
 
    Or send a custom log using curl:
@@ -39,14 +39,22 @@ A microservice-based log ingestion pipeline written in Go that processes logs th
      -d '{
        "level": "info",
        "service": "test-service",
-       "message": "Hello, World!",
+       "message": "Dragon of Dojima",
        "timestamp": "2024-03-14T12:00:00Z"
      }'
    ```
 
 4. View logs in Kibana:
    - Open http://localhost:5601 in your browser
-   - Navigate to "Discover" to view your logs
+   - or fetch in terminal
+    curl -X GET "http://localhost:9200/logs-*/_search?pretty" -H 'Content-Type: application/json' -d'
+   {
+    "query": {
+       "match_all": {}
+    },
+    "size": 10
+   }'
+
 
 ## Development
 

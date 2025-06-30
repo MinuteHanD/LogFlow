@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 const (
 	InputTopic    = "raw_logs"
 	OutputTopic   = "parsed_logs"
+	DLQTopic      = "raw_logs_dlq"
 	ConsumerGroup = "parser-group"
 )
 
@@ -109,9 +111,7 @@ func (p *LogProcessor) normalizeTimestamp(timestamp string) (time.Time, int64, e
 		}
 	}
 
-	log.Printf("Warning: Could not parse timestamp %s, defaulting to current time", timestamp)
-	now := time.Now().UTC()
-	return now, now.UnixMilli(), nil
+	return time.Time{}, 0, fmt.Errorf("could not parse timestamp: %s", timestamp)
 }
 
 func (p *LogProcessor) normalizeLogLevel(level string) string {
@@ -144,6 +144,38 @@ func generateMessageHash(message string) string {
 		hash = hash*31 + int(char)
 	}
 	return string(rune(hash))
+}
+
+func sendToDLQ(producer sarama.SyncProducer, originalMessage *sarama.ConsumerMessage, processingError error) {
+	dlqMessage := &sarama.ProducerMessage{
+		Topic: DLQTopic,
+		Value: sarama.ByteEncoder(originalMessage.Value), // The original message content
+		Headers: []sarama.RecordHeader{
+			{
+				Key:   []byte("error"),
+				Value: []byte(processingError.Error()),
+			},
+			{
+				Key:   []byte("original_topic"),
+				Value: []byte(originalMessage.Topic),
+			},
+			{
+				Key:   []byte("original_partition"),
+				Value: []byte(string(rune(originalMessage.Partition))),
+			},
+			{
+				Key:   []byte("original_offset"),
+				Value: []byte(string(rune(originalMessage.Offset))),
+			},
+		},
+	}
+
+	_, _, err := producer.SendMessage(dlqMessage)
+	if err != nil {
+		log.Printf("CRITICAL: Failed to send message to DLQ. Topic: %s. Error: %v", DLQTopic, err)
+	} else {
+		log.Printf("Message sent to DLQ topic %s due to error: %v", DLQTopic, processingError)
+	}
 }
 
 func main() {
@@ -240,7 +272,9 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 		var incomingLog IncomingLogEntry
 		if err := json.Unmarshal(message.Value, &incomingLog); err != nil {
 			log.Printf("Failed to unmarshal incoming log: %v", err)
-			log.Printf("Raw message; %s", string(message.Value))
+
+			sendToDLQ(h.producer, message, err)
+
 			session.MarkMessage(message, "")
 			continue
 		}
@@ -248,6 +282,9 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 		parsedLog, err := h.processor.ProcessLog(incomingLog)
 		if err != nil {
 			log.Printf("Failed to process log: %v", err)
+
+			sendToDLQ(h.producer, message, err)
+
 			session.MarkMessage(message, "")
 			continue
 		}
