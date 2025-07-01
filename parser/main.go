@@ -95,23 +95,31 @@ func (p *LogProcessor) ProcessLog(raw IncomingLogEntry) (*ParsedLog, error) {
 }
 
 func (p *LogProcessor) normalizeTimestamp(timestamp string) (time.Time, int64, error) {
-	if t, err := time.Parse(time.RFC3339, timestamp); err == nil {
-		return t.UTC(), t.UnixMilli(), nil
-	}
-
 	formats := []string{
+		time.RFC3339,
 		"2006-01-02T15:04:05Z",
 		"2006-01-02T15:04:05.000Z",
 		"2006-01-02 15:04:05",
 	}
 
+	var parsedTime time.Time
+	var err error
+
 	for _, format := range formats {
-		if t, err := time.Parse(format, timestamp); err == nil {
-			return t.UTC(), t.UnixMilli(), nil
+		parsedTime, err = time.Parse(format, timestamp)
+		if err == nil {
+
+			break
 		}
 	}
 
-	return time.Time{}, 0, fmt.Errorf("could not parse timestamp: %s", timestamp)
+	if err != nil {
+
+		return time.Time{}, 0, fmt.Errorf("could not parse timestamp: %s", timestamp)
+	}
+
+	utcTime := parsedTime.UTC()
+	return utcTime, utcTime.UnixMilli(), nil
 }
 
 func (p *LogProcessor) normalizeLogLevel(level string) string {
