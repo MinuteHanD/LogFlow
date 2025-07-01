@@ -160,7 +160,7 @@ func generateMessageHash(message string) string {
 func sendToDLQ(logger *slog.Logger, producer sarama.SyncProducer, originalMessage *sarama.ConsumerMessage, processingError error) {
 	dlqMessage := &sarama.ProducerMessage{
 		Topic: DLQTopic,
-		Value: sarama.ByteEncoder(originalMessage.Value), // The original message content
+		Value: sarama.ByteEncoder(originalMessage.Value),
 		Headers: []sarama.RecordHeader{
 			{
 				Key:   []byte("error"),
@@ -190,7 +190,7 @@ func sendToDLQ(logger *slog.Logger, producer sarama.SyncProducer, originalMessag
 }
 
 func main() {
-	// Initialize a structured logger that outputs JSON to standard output.
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	logger.Info("Starting parser service...")
@@ -223,13 +223,13 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	processor := NewLogProcessor(logger) // Pass logger to processor
+	processor := NewLogProcessor(logger)
 
 	handler := &logHandler{
 		producer:  producer,
 		processor: processor,
 		ready:     make(chan bool),
-		logger:    logger, // Pass logger to handler
+		logger:    logger,
 	}
 
 	wg := &sync.WaitGroup{}
@@ -292,7 +292,7 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 		if err := json.Unmarshal(message.Value, &incomingLog); err != nil {
 			h.logger.Error("Failed to unmarshal incoming log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
-			sendToDLQ(h.logger, h.producer, message, err) // Pass logger to sendToDLQ
+			sendToDLQ(h.logger, h.producer, message, err)
 
 			session.MarkMessage(message, "")
 			continue
@@ -302,7 +302,7 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 		if err != nil {
 			h.logger.Error("Failed to process log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
-			sendToDLQ(h.logger, h.producer, message, err) // Pass logger to sendToDLQ
+			sendToDLQ(h.logger, h.producer, message, err)
 
 			session.MarkMessage(message, "")
 			continue

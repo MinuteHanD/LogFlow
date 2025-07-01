@@ -359,7 +359,6 @@ func (handler *logStorageHandler) ConsumeClaim(session sarama.ConsumerGroupSessi
 			continue
 		}
 
-		// If processing and storing was successful, mark the message as processed
 		session.MarkMessage(message, "")
 	}
 

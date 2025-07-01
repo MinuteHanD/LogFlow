@@ -32,9 +32,8 @@ func TestPipeline_Integration(t *testing.T) {
 
 	t.Log("Waiting for services to become healthy...")
 
-	// Poll for Ingestor readiness
 	ingestorReady := false
-	for i := 0; i < 30; i++ { // Poll for up to 60 seconds (30 * 2s)
+	for i := 0; i < 30; i++ {
 		resp, err := http.Get("http://localhost:8081/validation-rules")
 		if err == nil && resp.StatusCode == http.StatusOK {
 			ingestorReady = true
@@ -51,9 +50,8 @@ func TestPipeline_Integration(t *testing.T) {
 		t.Fatal("Ingestor service did not become ready in time.")
 	}
 
-	// Poll for Elasticsearch readiness
 	esReady := false
-	for i := 0; i < 30; i++ { // Poll for up to 60 seconds (30 * 2s)
+	for i := 0; i < 30; i++ {
 		resp, err := http.Get("http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s")
 		if err == nil && resp.StatusCode == http.StatusOK {
 			var healthResp map[string]interface{}

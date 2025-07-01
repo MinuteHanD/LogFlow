@@ -8,12 +8,10 @@ import (
 	"time"
 )
 
-// Helper function to create a discard logger for tests
 func newDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// TestLogProcessor_normalizeTimestamp tests the timestamp parsing and normalization.
 func TestLogProcessor_normalizeTimestamp(t *testing.T) {
 	processor := NewLogProcessor(newDiscardLogger())
 
@@ -21,25 +19,25 @@ func TestLogProcessor_normalizeTimestamp(t *testing.T) {
 		name         string
 		input        string
 		expectError  bool
-		expectedTime time.Time // We will now compare the actual time object.
+		expectedTime time.Time
 	}{
 		{
 			name:        "RFC3339 Format",
 			input:       "2025-07-01T10:30:00Z",
 			expectError: false,
-			// We create the expected time object explicitly in UTC.
+
 			expectedTime: time.Date(2025, 7, 1, 10, 30, 0, 0, time.UTC),
 		},
 		{
-			name:        "Format with Milliseconds",
-			input:       "2025-07-01T10:30:00.123Z",
-			expectError: false,
+			name:         "Format with Milliseconds",
+			input:        "2025-07-01T10:30:00.123Z",
+			expectError:  false,
 			expectedTime: time.Date(2025, 7, 1, 10, 30, 0, 123000000, time.UTC),
 		},
 		{
-			name:        "Format without Timezone (should be interpreted as UTC)",
-			input:       "2025-07-01 10:30:00",
-			expectError: false,
+			name:         "Format without Timezone (should be interpreted as UTC)",
+			input:        "2025-07-01 10:30:00",
+			expectError:  false,
 			expectedTime: time.Date(2025, 7, 1, 10, 30, 0, 0, time.UTC),
 		},
 		{
@@ -61,7 +59,7 @@ func TestLogProcessor_normalizeTimestamp(t *testing.T) {
 				if err != nil {
 					t.Errorf("Did not expect an error, but got: %v", err)
 				}
-				// This is the new, more reliable check.
+
 				if !parsedTime.Equal(tc.expectedTime) {
 					t.Errorf("Expected time %v, but got %v", tc.expectedTime, parsedTime)
 				}
@@ -70,7 +68,6 @@ func TestLogProcessor_normalizeTimestamp(t *testing.T) {
 	}
 }
 
-// TestLogProcessor_normalizeLogLevel tests that log levels are correctly standardized.
 func TestLogProcessor_normalizeLogLevel(t *testing.T) {
 	processor := NewLogProcessor(newDiscardLogger())
 
@@ -96,11 +93,9 @@ func TestLogProcessor_normalizeLogLevel(t *testing.T) {
 	}
 }
 
-// TestLogProcessor_ProcessLog tests the overall transformation of a raw log to a parsed log.
 func TestLogProcessor_ProcessLog(t *testing.T) {
 	processor := NewLogProcessor(newDiscardLogger())
 
-	// This is our input, a standard log that we'd get from Kafka.
 	rawLog := IncomingLogEntry{
 		Timestamp: "2025-07-01T12:00:00Z",
 		Level:     "WARNING",
@@ -115,8 +110,7 @@ func TestLogProcessor_ProcessLog(t *testing.T) {
 		t.Fatalf("ProcessLog failed for a valid log: %v", err)
 	}
 
-	// Check that the fields were processed correctly.
-	if parsedLog.Level != "WARN" { // Note: WARNING should be normalized to WARN
+	if parsedLog.Level != "WARN" {
 		t.Errorf("Expected Level to be 'WARN', got '%s'", parsedLog.Level)
 	}
 	if parsedLog.Service != "heater-control" {
@@ -129,16 +123,14 @@ func TestLogProcessor_ProcessLog(t *testing.T) {
 		t.Error("Expected a non-empty MessageHash to be generated")
 	}
 
-	// Check that metadata was handled correctly.
 	expectedMetadata := map[string]string{
 		"temp":           "85C",
-		"original_level": "WARNING", // This should be added by the processor
+		"original_level": "WARNING",
 	}
 	if !reflect.DeepEqual(parsedLog.Metadata, expectedMetadata) {
 		t.Errorf("Expected metadata %v, got %v", expectedMetadata, parsedLog.Metadata)
 	}
 
-	// Test case for when service is missing.
 	t.Run("Missing Service", func(t *testing.T) {
 		rawLogNoService := IncomingLogEntry{
 			Timestamp: "2025-07-01T12:00:00Z",
