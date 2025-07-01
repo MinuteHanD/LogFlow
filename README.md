@@ -21,6 +21,7 @@ The pipeline consists of three core microservices that communicate asynchronousl
 - **Dead-Letter Queue (DLQ)**: Isolates and saves malformed messages for later analysis without halting the pipeline.
 - **Structured Storage**: Stores logs in Elasticsearch, enabling powerful search and analytics.
 - **Containerized**: Fully containerized with Docker and Docker Compose for easy setup and deployment.
+- **Structured Logging**: Implemented using Go's `slog` library, providing machine-readable, JSON-formatted logs for enhanced observability, easier debugging, and powerful analytics in tools like Kibana.
 - **Comprehensive Testing**: Includes both unit and end-to-end integration tests to ensure reliability.
 
 ## Technology Stack

@@ -1,12 +1,23 @@
 package main
 
 import (
+	"log/slog"
+	"os"
 	"testing"
 	"time"
 )
 
+// Helper function to create a discard logger for tests
+func newDiscardLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+}
+
+// TestIndexManager_GetIndexname tests that the index name is generated correctly
+// based on the timestamp of the log.
 func TestIndexManager_GetIndexname(t *testing.T) {
-	manager := NewIndexManager(nil)
+	// We don't need a real Elasticsearch client for this test, so we pass nil.
+	// We pass a discard logger as the second argument.
+	manager := NewIndexManager(nil, newDiscardLogger())
 
 	testCases := []struct {
 		name     string
@@ -29,10 +40,10 @@ func TestIndexManager_GetIndexname(t *testing.T) {
 			expected: "logs-2026.12.31",
 		},
 		{
-
-			name:  "Zero Value Timestamp",
-			input: time.Time{},
-
+			// This tests the safety check in the function.
+			name:     "Zero Value Timestamp",
+			input:    time.Time{}, // The zero value for a time.
+			// It should default to the current day's index.
 			expected: "logs-" + time.Now().Format("2006.01.02"),
 		},
 	}

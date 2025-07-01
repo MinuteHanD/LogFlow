@@ -5,13 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"log/slog"
 
 	"github.com/IBM/sarama"
 	"github.com/elastic/go-elasticsearch/v8"
@@ -47,11 +48,13 @@ type ElasticsearchDocument struct {
 
 type IndexManager struct {
 	client *elasticsearch.Client
+	logger *slog.Logger
 }
 
-func NewIndexManager(client *elasticsearch.Client) *IndexManager {
+func NewIndexManager(client *elasticsearch.Client, logger *slog.Logger) *IndexManager {
 	return &IndexManager{
 		client: client,
+		logger: logger,
 	}
 }
 
@@ -68,7 +71,7 @@ func (im *IndexManager) CreateIndexIfNotExists(indexName string) error {
 	defer res.Body.Close()
 
 	if res.StatusCode == 200 {
-		log.Printf("Index %s already exists", indexName)
+		im.logger.Info("Index already exists", "index_name", indexName)
 		return nil
 	}
 
@@ -112,14 +115,14 @@ func (im *IndexManager) CreateIndexIfNotExists(indexName string) error {
 		return fmt.Errorf("failed to create index: %s", createRes.String())
 	}
 
-	log.Printf("Successfully created index %s", indexName)
+	im.logger.Info("Successfully created index", "index_name", indexName)
 	return nil
 }
 
 func (im *IndexManager) GetIndexname(timestamp time.Time) string {
 	t := timestamp
 	if t.IsZero() {
-		log.Printf("Invalid timestamp (zero value), using current time")
+		im.logger.Warn("Invalid timestamp (zero value), using current time for index name")
 		t = time.Now()
 	}
 	return fmt.Sprintf("%s-%s", IndexPrefix, t.Format("2006.01.02"))
@@ -129,13 +132,15 @@ type LogStorageProcessor struct {
 	esClient     *elasticsearch.Client
 	indexManager *IndexManager
 	version      string
+	logger       *slog.Logger
 }
 
-func NewLogStorageProcessor(client *elasticsearch.Client) *LogStorageProcessor {
+func NewLogStorageProcessor(client *elasticsearch.Client, logger *slog.Logger) *LogStorageProcessor {
 	return &LogStorageProcessor{
 		esClient:     client,
-		indexManager: NewIndexManager(client),
+		indexManager: NewIndexManager(client, logger),
 		version:      "1.0.0",
+		logger:       logger,
 	}
 }
 
@@ -180,35 +185,41 @@ func (lsp *LogStorageProcessor) ProcessAndStore(messageValue []byte) error {
 		return fmt.Errorf("elasticsearch indexing error: %s", res.String())
 	}
 
-	log.Printf("Successfully indexed document %s to %s", parsedLog.ID, indexName)
+	lsp.logger.Info("Successfully indexed document", "document_id", parsedLog.ID, "index_name", indexName)
 	return nil
 }
 
 func main() {
-	log.Println("Starting storage writer...")
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	logger.Info("Starting storage writer...")
 
 	kafkaEnv := os.Getenv("KAFKA_BROKERS")
 	esEnv := os.Getenv("ELASTICSEARCH_URL")
 	if kafkaEnv == "" || esEnv == "" {
-		log.Fatalf("Environment variables KAFKA_BROKERS and ELASTICSEARCH_URL must be set")
+		logger.Error("Environment variables KAFKA_BROKERS and ELASTICSEARCH_URL must be set")
+		os.Exit(1)
 	}
 
 	esClient, err := elasticsearch.NewClient(elasticsearch.Config{
 		Addresses: []string{esEnv},
 	})
 	if err != nil {
-		log.Fatalf("Error creating Elasticsearch client: %v", err)
+		logger.Error("Error creating Elasticsearch client", "error", err)
+		os.Exit(1)
 	}
 
 	res, err := esClient.Info()
 	if err != nil {
-		log.Fatalf("Error getting Elasticsearch info: %v", err)
+		logger.Error("Error getting Elasticsearch info", "error", err)
+		os.Exit(1)
 	}
 	defer res.Body.Close()
 	if res.IsError() {
-		log.Fatalf("Error response from Elasticsearch: %s", res.String())
+		logger.Error("Error response from Elasticsearch", "response", res.String())
+		os.Exit(1)
 	}
-	log.Println("Connected to Elasticsearch successfully")
+	logger.Info("Connected to Elasticsearch successfully")
 
 	config := sarama.NewConfig()
 	config.Version = sarama.V2_8_0_0
@@ -223,29 +234,32 @@ func main() {
 		if err == nil {
 			break
 		}
-		log.Printf("Kafka not ready (%v), retrying in 5s...", err)
+		logger.Warn("Kafka not ready, retrying in 5s...", "error", err, "attempt", i+1)
 		time.Sleep(5 * time.Second)
 	}
 	if err != nil {
-		log.Fatalf("Failed to create consumer group after retries: %v", err)
+		logger.Error("Failed to create consumer group after retries", "error", err)
+		os.Exit(1)
 	}
 	defer consumerGroup.Close()
 
 	producer, err := newProducer(brokers)
 	if err != nil {
-		log.Fatalf("Failed to create producer for DLQ: %v", err)
+		logger.Error("Failed to create producer for DLQ", "error", err)
+		os.Exit(1)
 	}
 	defer producer.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	processor := NewLogStorageProcessor(esClient)
+	processor := NewLogStorageProcessor(esClient, logger)
 
 	handler := &logStorageHandler{
 		processor: processor,
 		producer:  producer,
 		ready:     make(chan bool),
+		logger:    logger,
 	}
 
 	wg := &sync.WaitGroup{}
@@ -254,7 +268,7 @@ func main() {
 		defer wg.Done()
 		for {
 			if err := consumerGroup.Consume(ctx, []string{InputTopic}, handler); err != nil {
-				log.Printf("Error from consumer: %v", err)
+				logger.Error("Error from consumer", "error", err)
 			}
 			if ctx.Err() != nil {
 				return
@@ -264,13 +278,13 @@ func main() {
 	}()
 
 	<-handler.ready
-	log.Println("Storage Writer is online! Waiting for messages...")
+	logger.Info("Storage Writer is online! Waiting for messages...")
 
 	sigterm := make(chan os.Signal, 1)
 	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
 	<-sigterm
 
-	log.Println("Termination signal received. Shutting down the service...")
+	logger.Info("Termination signal received. Shutting down the service...")
 	cancel()
 	wg.Wait()
 }
@@ -283,7 +297,7 @@ func newProducer(brokers []string) (sarama.SyncProducer, error) {
 	return sarama.NewSyncProducer(brokers, config)
 }
 
-func sendToDLQ(producer sarama.SyncProducer, originalMessage *sarama.ConsumerMessage, processingError error) {
+func sendToDLQ(logger *slog.Logger, producer sarama.SyncProducer, originalMessage *sarama.ConsumerMessage, processingError error) {
 	dlqMessage := &sarama.ProducerMessage{
 		Topic: ElasticsearchDLQTopic,
 		Value: sarama.ByteEncoder(originalMessage.Value),
@@ -309,9 +323,9 @@ func sendToDLQ(producer sarama.SyncProducer, originalMessage *sarama.ConsumerMes
 
 	_, _, err := producer.SendMessage(dlqMessage)
 	if err != nil {
-		log.Printf("CRITICAL: Failed to send message to Elasticsearch DLQ. Topic: %s. Error: %v", ElasticsearchDLQTopic, err)
+		logger.Error("CRITICAL: Failed to send message to Elasticsearch DLQ", "topic", ElasticsearchDLQTopic, "error", err)
 	} else {
-		log.Printf("Message sent to Elasticsearch DLQ topic %s due to error: %v", ElasticsearchDLQTopic, processingError)
+		logger.Info("Message sent to Elasticsearch DLQ", "topic", ElasticsearchDLQTopic, "reason", processingError.Error())
 	}
 }
 
@@ -319,6 +333,7 @@ type logStorageHandler struct {
 	processor *LogStorageProcessor
 	producer  sarama.SyncProducer
 	ready     chan bool
+	logger    *slog.Logger
 }
 
 func (handler *logStorageHandler) Setup(_ sarama.ConsumerGroupSession) error {
@@ -332,18 +347,19 @@ func (handler *logStorageHandler) Cleanup(_ sarama.ConsumerGroupSession) error {
 
 func (handler *logStorageHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for message := range claim.Messages() {
-		log.Printf("Received parsed log from topic %s", message.Topic)
+		handler.logger.Info("Received parsed log", "topic", message.Topic, "partition", message.Partition, "offset", message.Offset)
 
 		if err := handler.processor.ProcessAndStore(message.Value); err != nil {
-			log.Printf("Failed to process and store log: %v", err)
+			handler.logger.Error("Failed to process and store log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
 			// Send the failed message to the Dead-Letter Queue
-			sendToDLQ(handler.producer, message, err)
+			sendToDLQ(handler.logger, handler.producer, message, err)
 
 			session.MarkMessage(message, "")
 			continue
 		}
 
+		// If processing and storing was successful, mark the message as processed
 		session.MarkMessage(message, "")
 	}
 
