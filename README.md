@@ -1,9 +1,3 @@
-Sir, like, okay. So the problem is that the whole README you've got is wrapped in a markdown code block. If you paste that directly into GitHub, it'll just show the raw text instead of, you know, actually formatting it. You just need the text *inside* that block.
-
-Here's the code. Just copy and paste this directly into your `readme.md` file on GitHub.
-
------
-
 # LogFlow: A Resilient Log Ingestion Pipeline
 
 [](https://github.com/MinuteHanD/log-pipeline/actions/workflows/ci.yml)
