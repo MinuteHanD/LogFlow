@@ -1,12 +1,19 @@
 package main
 
 import (
+	"log/slog"
+	"os"
 	"testing"
 	"time"
 )
 
+func newDiscardLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+}
+
 func TestIndexManager_GetIndexname(t *testing.T) {
-	manager := NewIndexManager(nil)
+
+	manager := NewIndexManager(nil, newDiscardLogger())
 
 	testCases := []struct {
 		name     string

@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"log/slog"
 
 	"github.com/IBM/sarama"
 )
@@ -45,11 +46,13 @@ type ParsedLog struct {
 
 type LogProcessor struct {
 	version string
+	logger  *slog.Logger
 }
 
-func NewLogProcessor() *LogProcessor {
+func NewLogProcessor(logger *slog.Logger) *LogProcessor {
 	return &LogProcessor{
 		version: "1.0.0",
+		logger:  logger,
 	}
 }
 
@@ -138,7 +141,7 @@ func (p *LogProcessor) normalizeLogLevel(level string) string {
 		return normalized
 	}
 
-	log.Printf("Warning: Unknown log level %s, defaulting to INFO", level)
+	p.logger.Warn("Unknown log level, defaulting to INFO", "level", level)
 	return "INFO"
 }
 
@@ -154,10 +157,10 @@ func generateMessageHash(message string) string {
 	return string(rune(hash))
 }
 
-func sendToDLQ(producer sarama.SyncProducer, originalMessage *sarama.ConsumerMessage, processingError error) {
+func sendToDLQ(logger *slog.Logger, producer sarama.SyncProducer, originalMessage *sarama.ConsumerMessage, processingError error) {
 	dlqMessage := &sarama.ProducerMessage{
 		Topic: DLQTopic,
-		Value: sarama.ByteEncoder(originalMessage.Value), // The original message content
+		Value: sarama.ByteEncoder(originalMessage.Value),
 		Headers: []sarama.RecordHeader{
 			{
 				Key:   []byte("error"),
@@ -169,29 +172,33 @@ func sendToDLQ(producer sarama.SyncProducer, originalMessage *sarama.ConsumerMes
 			},
 			{
 				Key:   []byte("original_partition"),
-				Value: []byte(string(rune(originalMessage.Partition))),
+				Value: []byte(fmt.Sprintf("%d", originalMessage.Partition)),
 			},
 			{
 				Key:   []byte("original_offset"),
-				Value: []byte(string(rune(originalMessage.Offset))),
+				Value: []byte(fmt.Sprintf("%d", originalMessage.Offset)),
 			},
 		},
 	}
 
 	_, _, err := producer.SendMessage(dlqMessage)
 	if err != nil {
-		log.Printf("CRITICAL: Failed to send message to DLQ. Topic: %s. Error: %v", DLQTopic, err)
+		logger.Error("CRITICAL: Failed to send message to DLQ", "topic", DLQTopic, "error", err)
 	} else {
-		log.Printf("Message sent to DLQ topic %s due to error: %v", DLQTopic, processingError)
+		logger.Info("Message sent to DLQ", "topic", DLQTopic, "reason", processingError.Error())
 	}
 }
 
 func main() {
-	log.Println("Starting parser service...")
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	logger.Info("Starting parser service...")
 
 	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
 	if kafkaBrokers == "" {
-		log.Fatal("KAFKA_BROKERS environment variable not set")
+		logger.Error("KAFKA_BROKERS environment variable not set")
+		os.Exit(1)
 	}
 	brokers := strings.Split(kafkaBrokers, ",")
 
@@ -202,24 +209,27 @@ func main() {
 
 	consumerGroup, err := sarama.NewConsumerGroup(brokers, ConsumerGroup, config)
 	if err != nil {
-		log.Fatalf("Failed to create consumer group: %v", err)
+		logger.Error("Failed to create consumer group", "error", err)
+		os.Exit(1)
 	}
 	defer consumerGroup.Close()
 
 	producer, err := newProducer(brokers)
 	if err != nil {
-		log.Fatalf("Failed to create producer: %v", err)
+		logger.Error("Failed to create producer", "error", err)
+		os.Exit(1)
 	}
 	defer producer.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	processor := NewLogProcessor()
+	processor := NewLogProcessor(logger)
 
 	handler := &logHandler{
 		producer:  producer,
 		processor: processor,
 		ready:     make(chan bool),
+		logger:    logger,
 	}
 
 	wg := &sync.WaitGroup{}
@@ -229,7 +239,7 @@ func main() {
 		defer wg.Done()
 		for {
 			if err := consumerGroup.Consume(ctx, []string{InputTopic}, handler); err != nil {
-				log.Printf("Error from consumer: %v", err)
+				logger.Error("Error from consumer", "error", err)
 			}
 			if ctx.Err() != nil {
 				return
@@ -239,13 +249,13 @@ func main() {
 	}()
 
 	<-handler.ready
-	log.Println("Parser consumer is up and running!")
+	logger.Info("Parser consumer is up and running!")
 
 	sigterm := make(chan os.Signal, 1)
 	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
 	<-sigterm
 
-	log.Println("Termination signal received. Shutting down")
+	logger.Info("Termination signal received. Shutting down")
 	cancel()
 	wg.Wait()
 }
@@ -262,6 +272,7 @@ type logHandler struct {
 	producer  sarama.SyncProducer
 	processor *LogProcessor
 	ready     chan bool
+	logger    *slog.Logger
 }
 
 func (h *logHandler) Setup(_ sarama.ConsumerGroupSession) error {
@@ -275,13 +286,13 @@ func (h *logHandler) Cleanup(_ sarama.ConsumerGroupSession) error {
 
 func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for message := range claim.Messages() {
-		log.Printf("Received message on topic %s", message.Topic)
+		h.logger.Info("Received message", "topic", message.Topic, "partition", message.Partition, "offset", message.Offset)
 
 		var incomingLog IncomingLogEntry
 		if err := json.Unmarshal(message.Value, &incomingLog); err != nil {
-			log.Printf("Failed to unmarshal incoming log: %v", err)
+			h.logger.Error("Failed to unmarshal incoming log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
-			sendToDLQ(h.producer, message, err)
+			sendToDLQ(h.logger, h.producer, message, err)
 
 			session.MarkMessage(message, "")
 			continue
@@ -289,9 +300,9 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 
 		parsedLog, err := h.processor.ProcessLog(incomingLog)
 		if err != nil {
-			log.Printf("Failed to process log: %v", err)
+			h.logger.Error("Failed to process log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
-			sendToDLQ(h.producer, message, err)
+			sendToDLQ(h.logger, h.producer, message, err)
 
 			session.MarkMessage(message, "")
 			continue
@@ -299,7 +310,7 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 
 		enrichedLogBytes, err := json.Marshal(parsedLog)
 		if err != nil {
-			log.Printf("Failed to marshal processed log: %v", err)
+			h.logger.Error("Failed to marshal processed log", "error", err, "log_id", parsedLog.ID)
 			session.MarkMessage(message, "")
 			continue
 		}
@@ -311,10 +322,9 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 
 		partition, offset, err := h.producer.SendMessage(producerMsg)
 		if err != nil {
-			log.Printf("Failed to send processed log to kafka: %v", err)
+			h.logger.Error("Failed to send processed log to Kafka", "error", err, "topic", OutputTopic, "log_id", parsedLog.ID)
 		} else {
-			log.Printf("Successfully sent processed log to topic %s (partition: %d, offset: %d)",
-				OutputTopic, partition, offset)
+			h.logger.Info("Successfully sent processed log to Kafka", "topic", OutputTopic, "partition", partition, "offset", offset, "log_id", parsedLog.ID)
 		}
 
 		session.MarkMessage(message, "")

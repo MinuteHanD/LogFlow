@@ -31,7 +31,48 @@ func TestPipeline_Integration(t *testing.T) {
 	})
 
 	t.Log("Waiting for services to become healthy...")
-	time.Sleep(30 * time.Second)
+
+	ingestorReady := false
+	for i := 0; i < 30; i++ {
+		resp, err := http.Get("http://localhost:8081/validation-rules")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			ingestorReady = true
+			resp.Body.Close()
+			t.Log("Ingestor service is ready.")
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if !ingestorReady {
+		t.Fatal("Ingestor service did not become ready in time.")
+	}
+
+	esReady := false
+	for i := 0; i < 30; i++ {
+		resp, err := http.Get("http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			var healthResp map[string]interface{}
+			if err := json.NewDecoder(resp.Body).Decode(&healthResp); err == nil {
+				status, ok := healthResp["status"].(string)
+				if ok && (status == "green" || status == "yellow") {
+					esReady = true
+					t.Log("Elasticsearch service is ready.")
+					break
+				}
+			}
+			resp.Body.Close()
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if !esReady {
+		t.Fatal("Elasticsearch service did not become ready in time.")
+	}
 
 	t.Log("Sending a test log to the ingestor...")
 	timestamp := time.Now().UTC().Format(time.RFC3339)

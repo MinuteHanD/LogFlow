@@ -1,13 +1,19 @@
 package main
 
 import (
+	"log/slog"
+	"os"
 	"reflect"
 	"testing"
 	"time"
 )
 
+func newDiscardLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+}
+
 func TestLogProcessor_normalizeTimestamp(t *testing.T) {
-	processor := NewLogProcessor()
+	processor := NewLogProcessor(newDiscardLogger())
 
 	testCases := []struct {
 		name         string
@@ -63,7 +69,7 @@ func TestLogProcessor_normalizeTimestamp(t *testing.T) {
 }
 
 func TestLogProcessor_normalizeLogLevel(t *testing.T) {
-	processor := NewLogProcessor()
+	processor := NewLogProcessor(newDiscardLogger())
 
 	testCases := []struct {
 		name     string
@@ -88,7 +94,7 @@ func TestLogProcessor_normalizeLogLevel(t *testing.T) {
 }
 
 func TestLogProcessor_ProcessLog(t *testing.T) {
-	processor := NewLogProcessor()
+	processor := NewLogProcessor(newDiscardLogger())
 
 	rawLog := IncomingLogEntry{
 		Timestamp: "2025-07-01T12:00:00Z",

@@ -1,110 +1,164 @@
+Sir, like, okay. So the problem is that the whole README you've got is wrapped in a markdown code block. If you paste that directly into GitHub, it'll just show the raw text instead of, you know, actually formatting it. You just need the text *inside* that block.
+
+Here's the code. Just copy and paste this directly into your `readme.md` file on GitHub.
+
+-----
+
 # LogFlow: A Resilient Log Ingestion Pipeline
 
-LogFlow is a high-performance, distributed log ingestion pipeline designed to reliably process and store log data from various sources. It is built on a microservice architecture, leveraging modern technologies like Go, Docker, Kafka, and Elasticsearch to create a scalable and fault-tolerant system.
+[](https://github.com/MinuteHanD/log-pipeline/actions/workflows/ci.yml)
 
-This project serves as a practical example of building a real-world data engineering pipeline, complete with data validation, message queuing, and structured storage.
+LogFlow is a multi-service log ingestion pipeline built in Go. It demonstrates a decoupled, fault-tolerant architecture for processing and storing high-volume log data. The system uses Kafka as a durable message bus and Elasticsearch for indexed storage and searchability.
 
-## Architecture Overview
+This project is fully containerized and includes a comprehensive testing suite.
 
-The pipeline consists of three core microservices that communicate asynchronously via Kafka topics. This decoupled design ensures that each service can be scaled and maintained independently, and it provides a buffer to handle bursts of traffic without losing data.
+-----
 
-1.  **Ingestor**: A lightweight HTTP server that acts as the entry point for all logs. It validates incoming data against a set of rules, and upon success, publishes the raw log to the `raw_logs` Kafka topic.
-2.  **Parser**: A consumer service that reads from the `raw_logs` topic. It parses the raw log, normalizes its fields (like timestamps and log levels), enriches it with metadata, and then publishes the structured result to the `parsed_logs` topic. Invalid logs that cannot be parsed are sent to a Dead-Letter Queue (DLQ) for later inspection.
-3.  **Storage Writer**: The final service in the pipeline. It consumes structured logs from the `parsed_logs` topic and writes them to a time-series index in Elasticsearch for long-term storage, analysis, and visualization.
+## Architecture
 
-## Features
+The pipeline follows an asynchronous, three-stage process. Each service is a distinct microservice that communicates via Kafka topics, ensuring resilience and scalability.
 
-- **HTTP Log Ingestion**: Simple and fast log submission over HTTP.
-- **Data Validation**: Ensures data quality at the edge before it enters the system.
-- **Asynchronous Processing**: Uses Kafka as a message broker to decouple services and buffer data.
-- **Log Parsing & Normalization**: Standardizes log formats for consistent storage.
-- **Dead-Letter Queue (DLQ)**: Isolates and saves malformed messages for later analysis without halting the pipeline.
-- **Structured Storage**: Stores logs in Elasticsearch, enabling powerful search and analytics.
-- **Containerized**: Fully containerized with Docker and Docker Compose for easy setup and deployment.
-- **Comprehensive Testing**: Includes both unit and end-to-end integration tests to ensure reliability.
+```
+                  ┌──────────┐      ┌──────────┐      ┌───────────┐      ┌───────────────┐
+[HTTP Client]───> │ Ingestor │ ───> │  Kafka   │ ───> │  Parser   │ ───> │     Kafka     │
+                  └──────────┘      │ raw_logs │      └───────────┘      │  parsed_logs  │
+                                    └──────────┘            │            └───────────────┘
+                                                          ▼                     │
+                                                   ┌──────────────┐             ▼
+                                                   │    Kafka     │      ┌────────────────┐
+                                                   │ raw_logs_dlq │      │ Storage Writer │
+                                                   └──────────────┘      └────────────────┘
+                                                                                  │
+                                                                                  ▼
+                                                                        ┌─────────────────┐
+                                                                        │  Elasticsearch  │
+                                                                        └─────────────────┘
+```
+
+### Core Components
+
+  * **Ingestor**: A Go service using the Gin framework. It exposes an HTTP endpoint (`/log`) to receive log entries. It performs initial validation (size, format, required fields) and publishes valid raw logs to the `raw_logs` Kafka topic.
+  * **Parser**: A Kafka consumer group that reads from `raw_logs`. It normalizes data (e.g., standardizing log levels, parsing timestamps), enriches logs with metadata, and generates a unique ID. Processed logs are published to `parsed_logs`. Logs that fail parsing are routed to a Dead-Letter Queue (`raw_logs_dlq`) for later analysis.
+  * **Storage Writer**: Consumes structured logs from the `parsed_logs` topic. It creates daily time-based indices in Elasticsearch and writes the final log document. If Elasticsearch is unavailable or rejects a document, the message is routed to its own DLQ (`parsed_logs_dlq`).
+
+-----
+
+## Key Features
+
+  * **Fault Tolerance**: Utilizes Dead-Letter Queues (DLQs) at both the parsing and storage stages to prevent data loss from malformed messages or downstream service outages.
+  * **Structured, Centralized Logging**: All services use Go's native `slog` library to output JSON-formatted logs, enabling easier debugging and analysis of the pipeline itself.
+  * **Asynchronous & Decoupled**: Kafka acts as a buffer, allowing the ingestor to handle traffic spikes without overwhelming the processing and storage layers. Services can be scaled, updated, or restarted independently.
+  * **Comprehensive Testing**: The project is validated by:
+      * **Unit Tests**: Focused tests for business logic within each service (e.g., validation, parsing logic).
+      * **End-to-End Integration Test**: A Go-based test that uses `docker-compose` to spin up the entire stack, sends a log via HTTP, and verifies its existence in Elasticsearch.
+  * **Containerized**: Fully defined in `docker-compose.yml` for reproducible one-command setup and deployment.
+
+-----
 
 ## Technology Stack
 
-- **Backend**: Go (Golang) 1.24.3
-- **API Framework**: Gin
-- **Message Queue**: Apache Kafka
-- **Database**: Elasticsearch
-- **Containerization**: Docker & Docker Compose
-- **Go Libraries**:
-    - `sarama`: Kafka client for Go
-    - `go-elasticsearch`: Official Elasticsearch client
-    - `gin-gonic`: HTTP web framework
+  * **Language**: Go 1.24.3
+  * **Services**: Gin (HTTP), Sarama (Kafka Client), go-elasticsearch (Elasticsearch Client)
+  * **Infrastructure**: Docker, Docker Compose, Kafka, Elasticsearch
+
+-----
 
 ## Prerequisites
 
-- Docker and Docker Compose
-- Go 1.24.3 or later (for local development and testing)
+  * Go 1.24.3+
+  * Docker and Docker Compose
+
+-----
 
 ## Getting Started
 
 1.  **Clone the repository:**
+
     ```bash
-    git clone https://github.com/MinuteHanD/LogFlow.git
-    cd LogFlow
+    git clone https://github.com/MinuteHanD/log-pipeline.git
+    cd log-pipeline
     ```
 
-2.  **Start all services using Docker Compose:**
-    This command will build the Docker images for the Go services and start all containers in the background.
+2.  **Start all services:**
+    The `--build` flag ensures the Go services are compiled into fresh images.
+
     ```bash
     docker compose up -d --build
     ```
 
-3.  **Send a test log:**
-    Use the provided script to send a variety of test logs to the pipeline.
+3.  **Send test logs:**
+    A script is provided to send a variety of valid and invalid logs to test the pipeline and DLQ functionality.
+
     ```bash
     ./send_all_logs.sh
     ```
-    Or send a custom log using `curl`:
-    ```bash
-    curl -X POST http://localhost:8081/log \
-      -H "Content-Type: application/json" \
-      -d '{ \
-        "level": "info", \
-        "service": "Solid Snake", \
-        "message": "Dragon of Dojima", \
-        "timestamp": "2025-07-01T12:00:00Z" \
-      }'
-    ```
 
-4.  **View logs in Elasticsearch:**
-    Allow a few moments for the pipeline to process the log, then query Elasticsearch directly:
+4.  **Verify in Elasticsearch:**
+    Allow a few seconds for processing, then query Elasticsearch. This command fetches the 10 most recent logs.
+
     ```bash
-    curl -X GET "http://localhost:9200/logs-*/_search?pretty" -H 'Content-Type: application/json' -d'\
-    {\
-      "query": { "match_all": {} },\
-      "size": 10,\
-      "sort": [ { "timestamp": "desc" } ]\
+    curl -X GET "http://localhost:9200/logs-*/_search?pretty" -H 'Content-Type: application/json' -d'
+    {
+      "query": { "match_all": {} },
+      "size": 10,
+      "sort": [ { "timestamp": { "order": "desc" } } ]
     }'
     ```
-    You can also view the logs and create dashboards in **Kibana** by navigating to `http://localhost:5601` in your browser.
 
-## Testing
+    You can also use Kibana at `http://localhost:5601`.
 
-The project includes a suite of tests to ensure code quality and system reliability.
+-----
 
-### Unit Tests
+## Development and Testing
 
-Unit tests check individual functions and components in isolation. They are fast and do not require any external dependencies like Docker.
+For local development, you can run the infrastructure in Docker and the Go services directly on your host.
 
-To run all unit tests for all services:
-```bash
-go test -v ./...
-```
+1.  **Start infrastructure services:**
 
-### Integration Test
+    ```bash
+    docker compose up -d kafka elasticsearch kibana
+    ```
 
-The integration test verifies the entire pipeline, from HTTP ingestion to storage in Elasticsearch. It uses Docker Compose to manage the required services.
+2.  **Run each Go service in a separate terminal:**
 
-**Note:** This test is slower and will start and stop Docker containers on your machine.
+    ```bash
+    # Terminal 1: Ingestor
+    export KAFKA_BROKERS=localhost:9092
+    go run ./ingestor
 
-To run the integration test:
-```bash
-go test -v -tags=integration
-```
+    # Terminal 2: Parser
+    export KAFKA_BROKERS=localhost:9092
+    go run ./parser
 
+    # Terminal 3: Storage Writer
+    export KAFKA_BROKERS=localhost:9092
+    export ELASTICSEARCH_URL=http://localhost:9200
+    go run ./storage-writer
+    ```
 
+### Running Tests
+
+The project separates fast unit tests from slower, dependency-heavy integration tests using Go build tags.
+
+  * **Run Unit Tests:**
+    This executes all `*_test.go` files that do *not* have the `integration` build tag.
+
+    ```bash
+    go test -v ./...
+    ```
+
+  * **Run Integration Test:**
+    This command specifically runs tests tagged with `integration`. It will manage Docker containers automatically. Ensure Docker is running.
+
+    ```bash
+    go test -v -tags=integration
+    ```
+
+-----
+
+## Future Work & Improvements
+
+  * **Configuration Management**: Centralize configuration (e.g., Kafka topics, ports) using a library like Viper to read from YAML files with environment variable overrides.
+  * **Metrics & Observability**: Expose Prometheus metrics from each service (e.g., logs processed, error rates, processing latency) for monitoring and alerting.
+  * **Correlation IDs**: Implement a correlation ID at the `ingestor` and pass it through Kafka headers to trace a single request across all services in the structured logs.
+  * **DLQ Re-processing**: Build a utility or service to consume from the DLQ topics, attempt to re-process messages, and archive unrecoverable ones.
