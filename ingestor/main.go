@@ -260,6 +260,10 @@ func main() {
 		})
 	})
 
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
 	logger.Info("Ingestor service starting", "port", 8081)
 	if err := router.Run(":8081"); err != nil {
 		logger.Error("Failed to run Gin server", "error", err)

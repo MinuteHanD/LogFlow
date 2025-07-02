@@ -61,6 +61,16 @@ services:
     environment:
       - KAFKA_BROKERS=kafka:9092
 
+  log-generator:
+    build:
+      context: .
+      dockerfile: log-generator/Dockerfile
+    depends_on:
+      - ingestor
+    environment:
+      - INGESTOR_URL=http://ingestor:8081/log
+    restart: on-failure
+
   parser:
     build:
       context: .
