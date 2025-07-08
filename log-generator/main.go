@@ -12,14 +12,11 @@ import (
 	"time"
 )
 
-// These are the fake services that will be generating logs.
 var (
 	services = []string{"api-gateway", "user-service", "payment-processor", "auth-service", "notification-sender"}
 	levels   = []string{"INFO", "WARN", "ERROR", "DEBUG"}
 )
 
-// LogEntry defines the structure of the log we're sending.
-// It matches the structure your ingestor expects.
 type LogEntry struct {
 	Timestamp string `json:"timestamp"`
 	Level     string `json:"level"`
@@ -38,7 +35,6 @@ func main() {
 	}
 	ingestorHealthURL := strings.Replace(ingestorURL, "/log", "/health", 1)
 
-	// Wait for the ingestor to be ready
 	for {
 		resp, err := http.Get(ingestorHealthURL)
 		if err == nil && resp.StatusCode == http.StatusOK {
@@ -55,28 +51,23 @@ func main() {
 
 	logger.Info("Logs will be sent to", "url", ingestorURL)
 
-	// Seed the random number generator
 	source := rand.NewSource(time.Now().UnixNano())
 	random := rand.New(source)
 
-	// Infinite loop to continuously generate logs
 	for {
-		// Sleep for a random duration between 500ms and 3s to simulate real traffic
+
 		sleepDuration := time.Duration(500+random.Intn(2500)) * time.Millisecond
 		time.Sleep(sleepDuration)
 
-		// Create a new log entry with random data
 		logEntry := generateRandomLog(random)
 
-		// Convert the log entry to JSON
 		payload, err := json.Marshal(logEntry)
 		if err != nil {
-			// This should ideally never happen with our struct
+
 			logger.Error("Failed to marshal log entry to JSON", "error", err)
 			continue
 		}
 
-		// Send the log to the ingestor service
 		resp, err := http.Post(ingestorURL, "application/json", bytes.NewReader(payload))
 		if err != nil {
 			logger.Error("Failed to send log to ingestor", "error", err, "service", logEntry.Service)
@@ -92,7 +83,6 @@ func main() {
 	}
 }
 
-// generateRandomLog creates a single log entry with randomized content.
 func generateRandomLog(random *rand.Rand) LogEntry {
 	service := services[random.Intn(len(services))]
 	level := levels[random.Intn(len(levels))]
@@ -106,7 +96,6 @@ func generateRandomLog(random *rand.Rand) LogEntry {
 	}
 }
 
-// generateRandomMessage creates a more realistic log message based on service and level.
 func generateRandomMessage(service, level string, random *rand.Rand) string {
 	userID := 1000 + random.Intn(9000)
 	switch level {
@@ -125,7 +114,7 @@ func generateRandomMessage(service, level string, random *rand.Rand) string {
 			"API rate limit approaching for client %d",
 		}
 		return fmt.Sprintf(warnMessages[random.Intn(len(warnMessages))], 50+random.Intn(200))
-	default: // INFO or DEBUG
+	default:
 		infoMessages := []string{
 			"User %d logged in successfully.",
 			"Processed new order #%d for user %d.",
