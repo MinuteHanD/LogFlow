@@ -13,7 +13,7 @@ func newDiscardLogger() *slog.Logger {
 }
 
 func TestLogProcessor_normalizeTimestamp(t *testing.T) {
-	processor := NewLogProcessor(newDiscardLogger())
+	processor := NewLogProcessor(newDiscardLogger(), "test-version")
 
 	testCases := []struct {
 		name         string
@@ -69,7 +69,7 @@ func TestLogProcessor_normalizeTimestamp(t *testing.T) {
 }
 
 func TestLogProcessor_normalizeLogLevel(t *testing.T) {
-	processor := NewLogProcessor(newDiscardLogger())
+	processor := NewLogProcessor(newDiscardLogger(), "test-version")
 
 	testCases := []struct {
 		name     string
@@ -94,7 +94,7 @@ func TestLogProcessor_normalizeLogLevel(t *testing.T) {
 }
 
 func TestLogProcessor_ProcessLog(t *testing.T) {
-	processor := NewLogProcessor(newDiscardLogger())
+	processor := NewLogProcessor(newDiscardLogger(), "test-version")
 
 	rawLog := IncomingLogEntry{
 		Timestamp: "2025-07-01T12:00:00Z",

@@ -1,0 +1,20 @@
+kafka:
+  brokers: ["kafka:9092"]
+  topics:
+    raw: "raw_logs"
+    parsed: "parsed_logs"
+    raw_dlq: "raw_logs_dlq"       
+    parsed_dlq: "parsed_logs_dlq" 
+
+elasticsearch:
+  url: "http://elasticsearch:9200"
+
+ingestor:
+  http_port: 8081 
+
+parser:
+  version: "1.0.0"
+
+storage_writer:
+  version: "1.0.0"
+  index_prefix: "logs"

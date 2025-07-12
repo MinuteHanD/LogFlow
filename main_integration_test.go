@@ -34,7 +34,7 @@ func TestPipeline_Integration(t *testing.T) {
 
 	ingestorReady := false
 	for i := 0; i < 30; i++ {
-		resp, err := http.Get("http://localhost:8081/validation-rules")
+		resp, err := http.Get("http://localhost:8081/health")
 		if err == nil && resp.StatusCode == http.StatusOK {
 			ingestorReady = true
 			resp.Body.Close()

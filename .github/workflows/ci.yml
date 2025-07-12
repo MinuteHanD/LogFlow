@@ -30,3 +30,10 @@ jobs:
       
       - name: Run Integration Test
         run: go test -v -tags=integration
+
+      - name: Build Docker Images
+        run: |
+          docker build -t ingestor -f ingestor/Dockerfile .
+          docker build -t parser -f parser/Dockerfile .
+          docker build -t storage-writer -f storage-writer/Dockerfile .
+          docker build -t log-generator -f log-generator/Dockerfile .

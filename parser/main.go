@@ -14,12 +14,11 @@ import (
 	"log/slog"
 
 	"github.com/IBM/sarama"
+	"github.com/MinuteHanD/log-pipeline/config"
+	"github.com/MinuteHanD/log-pipeline/kafka"
 )
 
 const (
-	InputTopic    = "raw_logs"
-	OutputTopic   = "parsed_logs"
-	DLQTopic      = "raw_logs_dlq"
 	ConsumerGroup = "parser-group"
 )
 
@@ -49,9 +48,9 @@ type LogProcessor struct {
 	logger  *slog.Logger
 }
 
-func NewLogProcessor(logger *slog.Logger) *LogProcessor {
+func NewLogProcessor(logger *slog.Logger, version string) *LogProcessor {
 	return &LogProcessor{
-		version: "1.0.0",
+		version: version,
 		logger:  logger,
 	}
 }
@@ -157,64 +156,31 @@ func generateMessageHash(message string) string {
 	return string(rune(hash))
 }
 
-func sendToDLQ(logger *slog.Logger, producer sarama.SyncProducer, originalMessage *sarama.ConsumerMessage, processingError error) {
-	dlqMessage := &sarama.ProducerMessage{
-		Topic: DLQTopic,
-		Value: sarama.ByteEncoder(originalMessage.Value),
-		Headers: []sarama.RecordHeader{
-			{
-				Key:   []byte("error"),
-				Value: []byte(processingError.Error()),
-			},
-			{
-				Key:   []byte("original_topic"),
-				Value: []byte(originalMessage.Topic),
-			},
-			{
-				Key:   []byte("original_partition"),
-				Value: []byte(fmt.Sprintf("%d", originalMessage.Partition)),
-			},
-			{
-				Key:   []byte("original_offset"),
-				Value: []byte(fmt.Sprintf("%d", originalMessage.Offset)),
-			},
-		},
-	}
 
-	_, _, err := producer.SendMessage(dlqMessage)
-	if err != nil {
-		logger.Error("CRITICAL: Failed to send message to DLQ", "topic", DLQTopic, "error", err)
-	} else {
-		logger.Info("Message sent to DLQ", "topic", DLQTopic, "reason", processingError.Error())
-	}
-}
 
 func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	logger.Info("Starting parser service...")
-
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	if kafkaBrokers == "" {
-		logger.Error("KAFKA_BROKERS environment variable not set")
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logger.Error("Failed to load configuration", "error", err)
 		os.Exit(1)
 	}
-	brokers := strings.Split(kafkaBrokers, ",")
 
 	config := sarama.NewConfig()
 	config.Version = sarama.V2_8_0_0
 	config.Consumer.Group.Rebalance.Strategy = sarama.BalanceStrategyRoundRobin
 	config.Consumer.Offsets.Initial = sarama.OffsetOldest
 
-	consumerGroup, err := sarama.NewConsumerGroup(brokers, ConsumerGroup, config)
+	consumerGroup, err := sarama.NewConsumerGroup(cfg.Kafka.Brokers, ConsumerGroup, config)
 	if err != nil {
 		logger.Error("Failed to create consumer group", "error", err)
 		os.Exit(1)
 	}
 	defer consumerGroup.Close()
 
-	producer, err := newProducer(brokers)
+	producer, err := newProducer(cfg.Kafka.Brokers)
 	if err != nil {
 		logger.Error("Failed to create producer", "error", err)
 		os.Exit(1)
@@ -223,13 +189,14 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	processor := NewLogProcessor(logger)
+	processor := NewLogProcessor(logger, cfg.Parser.Version)
 
 	handler := &logHandler{
 		producer:  producer,
 		processor: processor,
 		ready:     make(chan bool),
 		logger:    logger,
+		cfg:       cfg,
 	}
 
 	wg := &sync.WaitGroup{}
@@ -238,7 +205,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for {
-			if err := consumerGroup.Consume(ctx, []string{InputTopic}, handler); err != nil {
+			if err := consumerGroup.Consume(ctx, []string{handler.cfg.Kafka.Topics.Raw}, handler); err != nil {
 				logger.Error("Error from consumer", "error", err)
 			}
 			if ctx.Err() != nil {
@@ -273,6 +240,7 @@ type logHandler struct {
 	processor *LogProcessor
 	ready     chan bool
 	logger    *slog.Logger
+	cfg       *config.Config
 }
 
 func (h *logHandler) Setup(_ sarama.ConsumerGroupSession) error {
@@ -292,7 +260,7 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 		if err := json.Unmarshal(message.Value, &incomingLog); err != nil {
 			h.logger.Error("Failed to unmarshal incoming log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
-			sendToDLQ(h.logger, h.producer, message, err)
+			kafka.SendToDLQ(h.logger, h.producer, h.cfg.Kafka.Topics.RawDLQ, message, err)
 
 			session.MarkMessage(message, "")
 			continue
@@ -302,7 +270,7 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 		if err != nil {
 			h.logger.Error("Failed to process log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
-			sendToDLQ(h.logger, h.producer, message, err)
+			kafka.SendToDLQ(h.logger, h.producer, h.cfg.Kafka.Topics.RawDLQ, message, err)
 
 			session.MarkMessage(message, "")
 			continue
@@ -316,15 +284,15 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 		}
 
 		producerMsg := &sarama.ProducerMessage{
-			Topic: OutputTopic,
+			Topic: h.cfg.Kafka.Topics.Parsed,
 			Value: sarama.ByteEncoder(enrichedLogBytes),
 		}
 
 		partition, offset, err := h.producer.SendMessage(producerMsg)
 		if err != nil {
-			h.logger.Error("Failed to send processed log to Kafka", "error", err, "topic", OutputTopic, "log_id", parsedLog.ID)
+			h.logger.Error("Failed to send processed log to Kafka", "error", err, "topic", h.cfg.Kafka.Topics.Parsed, "log_id", parsedLog.ID)
 		} else {
-			h.logger.Info("Successfully sent processed log to Kafka", "topic", OutputTopic, "partition", partition, "offset", offset, "log_id", parsedLog.ID)
+			h.logger.Info("Successfully sent processed log to Kafka", "topic", h.cfg.Kafka.Topics.Parsed, "partition", partition, "offset", offset, "log_id", parsedLog.ID)
 		}
 
 		session.MarkMessage(message, "")

@@ -12,15 +12,13 @@ import (
 	"log/slog"
 
 	"github.com/IBM/sarama"
+	"github.com/MinuteHanD/log-pipeline/config"
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	KafkaTopic     = "raw_logs"
 	MaxMessageSize = 64 * 1024 // max message size 64 kb
 )
-
-var KafkaBrokers = os.Getenv("KAFKA_BROKERS")
 
 type LogEntry struct {
 	Timestamp string            `json:"timestamp" binding:"required"`
@@ -180,17 +178,20 @@ func (v *LogValidator) ValidateComplete(data []byte) ValidationResult {
 }
 
 func main() {
-	// Initialize a structured logger that outputs JSON to standard output.
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logger.Error("Failed to load configuration", "error", err)
+		os.Exit(1)
+	}
 
 	config := sarama.NewConfig()
 	config.Producer.Return.Successes = true
 	config.Producer.RequiredAcks = sarama.WaitForAll
 	config.Version = sarama.V2_8_0_0
 
-	KafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	brokers := strings.Split(KafkaBrokers, ",")
-	producer, err := sarama.NewSyncProducer(brokers, config)
+	producer, err := sarama.NewSyncProducer(cfg.Kafka.Brokers, config)
 
 	if err != nil {
 		logger.Error("Failed to start Sarama producer", "error", err)
@@ -200,10 +201,6 @@ func main() {
 
 	validator := NewLogValidator()
 	router := gin.Default()
-
-	// Replace Gin's default logger with our structured logger or disable it if not needed.
-	// For simplicity, we'll keep Gin's logger for request logging, but our app logs will be structured.
-	// router.Use(gin.Logger())
 
 	router.POST("/log", func(c *gin.Context) {
 		body, err := c.GetRawData()
@@ -227,13 +224,13 @@ func main() {
 		}
 
 		msg := &sarama.ProducerMessage{
-			Topic: KafkaTopic,
+			Topic: cfg.Kafka.Topics.Raw,
 			Value: sarama.ByteEncoder(body),
 		}
 
 		partition, offset, err := producer.SendMessage(msg)
 		if err != nil {
-			logger.Error("Failed to send message to Kafka", "error", err, "topic", KafkaTopic)
+			logger.Error("Failed to send message to Kafka", "error", err, "topic", cfg.Kafka.Topics.Raw)
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error":   "failed to send message to kafka",
 				"details": err.Error(),
@@ -241,7 +238,7 @@ func main() {
 			return
 		}
 
-		logger.Info("Log received and validated successfully", "topic", KafkaTopic, "partition", partition, "offset", offset)
+		logger.Info("Log received and validated successfully", "topic", cfg.Kafka.Topics.Raw, "partition", partition, "offset", offset)
 		c.JSON(http.StatusOK, gin.H{
 			"message":   "log recieved and validated successfully",
 			"partition": partition,
@@ -260,8 +257,12 @@ func main() {
 		})
 	})
 
-	logger.Info("Ingestor service starting", "port", 8081)
-	if err := router.Run(":8081"); err != nil {
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	logger.Info("Ingestor service starting", "port", cfg.Ingestor.HTTPPort)
+	if err := router.Run(fmt.Sprintf(":%d", cfg.Ingestor.HTTPPort)); err != nil {
 		logger.Error("Failed to run Gin server", "error", err)
 		os.Exit(1)
 	}

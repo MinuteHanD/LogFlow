@@ -17,13 +17,14 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/MinuteHanD/log-pipeline/config"
+	"github.com/MinuteHanD/log-pipeline/kafka"
 )
 
+
+
 const (
-	InputTopic            = "parsed_logs"
-	ConsumerGroup         = "storage-writer-group"
-	ElasticsearchDLQTopic = "parsed_logs_dlq" // Dead-Letter Queue topic for Elasticsearch failures
-	IndexPrefix           = "logs"
+	ConsumerGroup = "storage-writer-group"
 )
 
 type ParsedLog struct {
@@ -47,14 +48,16 @@ type ElasticsearchDocument struct {
 }
 
 type IndexManager struct {
-	client *elasticsearch.Client
-	logger *slog.Logger
+	client      *elasticsearch.Client
+	logger      *slog.Logger
+	indexPrefix string
 }
 
-func NewIndexManager(client *elasticsearch.Client, logger *slog.Logger) *IndexManager {
+func NewIndexManager(client *elasticsearch.Client, logger *slog.Logger, indexPrefix string) *IndexManager {
 	return &IndexManager{
-		client: client,
-		logger: logger,
+		client:      client,
+		logger:      logger,
+		indexPrefix: indexPrefix,
 	}
 }
 
@@ -125,7 +128,7 @@ func (im *IndexManager) GetIndexname(timestamp time.Time) string {
 		im.logger.Warn("Invalid timestamp (zero value), using current time for index name")
 		t = time.Now()
 	}
-	return fmt.Sprintf("%s-%s", IndexPrefix, t.Format("2006.01.02"))
+	return fmt.Sprintf("%s-%s", im.indexPrefix, t.Format("2006.01.02"))
 }
 
 type LogStorageProcessor struct {
@@ -135,11 +138,11 @@ type LogStorageProcessor struct {
 	logger       *slog.Logger
 }
 
-func NewLogStorageProcessor(client *elasticsearch.Client, logger *slog.Logger) *LogStorageProcessor {
+func NewLogStorageProcessor(client *elasticsearch.Client, logger *slog.Logger, version string, indexPrefix string) *LogStorageProcessor {
 	return &LogStorageProcessor{
 		esClient:     client,
-		indexManager: NewIndexManager(client, logger),
-		version:      "1.0.0",
+		indexManager: NewIndexManager(client, logger, indexPrefix),
+		version:      version,
 		logger:       logger,
 	}
 }
@@ -192,17 +195,14 @@ func (lsp *LogStorageProcessor) ProcessAndStore(messageValue []byte) error {
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	logger.Info("Starting storage writer...")
-
-	kafkaEnv := os.Getenv("KAFKA_BROKERS")
-	esEnv := os.Getenv("ELASTICSEARCH_URL")
-	if kafkaEnv == "" || esEnv == "" {
-		logger.Error("Environment variables KAFKA_BROKERS and ELASTICSEARCH_URL must be set")
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logger.Error("Failed to load configuration", "error", err)
 		os.Exit(1)
 	}
 
 	esClient, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: []string{esEnv},
+		Addresses: []string{cfg.Elasticsearch.URL},
 	})
 	if err != nil {
 		logger.Error("Error creating Elasticsearch client", "error", err)
@@ -226,11 +226,9 @@ func main() {
 	config.Consumer.Group.Rebalance.Strategy = sarama.BalanceStrategyRoundRobin
 	config.Consumer.Offsets.Initial = sarama.OffsetOldest
 
-	brokers := strings.Split(kafkaEnv, ",")
-
 	var consumerGroup sarama.ConsumerGroup
 	for i := 0; i < 10; i++ {
-		consumerGroup, err = sarama.NewConsumerGroup(brokers, ConsumerGroup, config)
+		consumerGroup, err = sarama.NewConsumerGroup(cfg.Kafka.Brokers, ConsumerGroup, config)
 		if err == nil {
 			break
 		}
@@ -243,7 +241,7 @@ func main() {
 	}
 	defer consumerGroup.Close()
 
-	producer, err := newProducer(brokers)
+	producer, err := newProducer(cfg.Kafka.Brokers)
 	if err != nil {
 		logger.Error("Failed to create producer for DLQ", "error", err)
 		os.Exit(1)
@@ -253,13 +251,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	processor := NewLogStorageProcessor(esClient, logger)
+	processor := NewLogStorageProcessor(esClient, logger, cfg.StorageWriter.Version, cfg.StorageWriter.IndexPrefix)
 
 	handler := &logStorageHandler{
 		processor: processor,
 		producer:  producer,
 		ready:     make(chan bool),
 		logger:    logger,
+		cfg:       cfg,
 	}
 
 	wg := &sync.WaitGroup{}
@@ -267,7 +266,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for {
-			if err := consumerGroup.Consume(ctx, []string{InputTopic}, handler); err != nil {
+			if err := consumerGroup.Consume(ctx, []string{cfg.Kafka.Topics.Parsed}, handler); err != nil {
 				logger.Error("Error from consumer", "error", err)
 			}
 			if ctx.Err() != nil {
@@ -297,43 +296,14 @@ func newProducer(brokers []string) (sarama.SyncProducer, error) {
 	return sarama.NewSyncProducer(brokers, config)
 }
 
-func sendToDLQ(logger *slog.Logger, producer sarama.SyncProducer, originalMessage *sarama.ConsumerMessage, processingError error) {
-	dlqMessage := &sarama.ProducerMessage{
-		Topic: ElasticsearchDLQTopic,
-		Value: sarama.ByteEncoder(originalMessage.Value),
-		Headers: []sarama.RecordHeader{
-			{
-				Key:   []byte("error"),
-				Value: []byte(processingError.Error()),
-			},
-			{
-				Key:   []byte("original_topic"),
-				Value: []byte(originalMessage.Topic),
-			},
-			{
-				Key:   []byte("original_partition"),
-				Value: []byte(fmt.Sprintf("%d", originalMessage.Partition)),
-			},
-			{
-				Key:   []byte("original_offset"),
-				Value: []byte(fmt.Sprintf("%d", originalMessage.Offset)),
-			},
-		},
-	}
 
-	_, _, err := producer.SendMessage(dlqMessage)
-	if err != nil {
-		logger.Error("CRITICAL: Failed to send message to Elasticsearch DLQ", "topic", ElasticsearchDLQTopic, "error", err)
-	} else {
-		logger.Info("Message sent to Elasticsearch DLQ", "topic", ElasticsearchDLQTopic, "reason", processingError.Error())
-	}
-}
 
 type logStorageHandler struct {
 	processor *LogStorageProcessor
 	producer  sarama.SyncProducer
 	ready     chan bool
 	logger    *slog.Logger
+	cfg       *config.Config
 }
 
 func (handler *logStorageHandler) Setup(_ sarama.ConsumerGroupSession) error {
@@ -353,7 +323,7 @@ func (handler *logStorageHandler) ConsumeClaim(session sarama.ConsumerGroupSessi
 			handler.logger.Error("Failed to process and store log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
 			// Send the failed message to the Dead-Letter Queue
-			sendToDLQ(handler.logger, handler.producer, message, err)
+			kafka.SendToDLQ(handler.logger, handler.producer, handler.cfg.Kafka.Topics.ParsedDLQ, message, err)
 
 			session.MarkMessage(message, "")
 			continue
