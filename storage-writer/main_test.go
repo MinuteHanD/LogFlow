@@ -13,7 +13,7 @@ func newDiscardLogger() *slog.Logger {
 
 func TestIndexManager_GetIndexname(t *testing.T) {
 
-	manager := NewIndexManager(nil, newDiscardLogger())
+	manager := NewIndexManager(nil, newDiscardLogger(), "logs")
 
 	testCases := []struct {
 		name     string

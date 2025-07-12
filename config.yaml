@@ -1,26 +1,20 @@
-# Centralized configuration for the LogFlow pipeline
-
-# Kafka settings used by all services
 kafka:
   brokers: ["kafka:9092"]
   topics:
     raw: "raw_logs"
     parsed: "parsed_logs"
-    raw_dlq: "raw_logs_dlq"       # Dead-letter queue for the Parser
-    parsed_dlq: "parsed_logs_dlq" # Dead-letter queue for the Storage Writer
+    raw_dlq: "raw_logs_dlq"       
+    parsed_dlq: "parsed_logs_dlq" 
 
-# Elasticsearch settings used by the Storage Writer
 elasticsearch:
   url: "http://elasticsearch:9200"
 
-# Service-specific settings
 ingestor:
-  http_port: 8081 # Port for the Ingestor's HTTP server
+  http_port: 8081 
 
 parser:
-  # No specific settings for now, but we'll add a section for consistency
-  placeholder: true
+  version: "1.0.0"
 
 storage_writer:
-  # No specific settings for now, but we'll add a section for consistency
-  placeholder: true
+  version: "1.0.0"
+  index_prefix: "logs"

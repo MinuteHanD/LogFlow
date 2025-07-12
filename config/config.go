@@ -8,6 +8,8 @@ type Config struct {
 	Kafka         KafkaConfig
 	Elasticsearch ElasticsearchConfig
 	Ingestor      IngestorConfig
+	Parser        ParserConfig
+	StorageWriter StorageWriterConfig `mapstructure:"storage_writer"`
 }
 
 type KafkaConfig struct {
@@ -28,6 +30,15 @@ type ElasticsearchConfig struct {
 
 type IngestorConfig struct {
 	HTTPPort int `mapstructure:"http_port"`
+}
+
+type ParserConfig struct {
+	Version string `mapstructure:"version"`
+}
+
+type StorageWriterConfig struct {
+	Version     string `mapstructure:"version"`
+	IndexPrefix string `mapstructure:"index_prefix"`
 }
 
 func LoadConfig() (*Config, error) {

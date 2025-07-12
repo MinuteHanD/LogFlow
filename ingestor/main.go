@@ -12,15 +12,13 @@ import (
 	"log/slog"
 
 	"github.com/IBM/sarama"
-	"github.com/gin-gonic/gin"
 	"github.com/MinuteHanD/log-pipeline/config"
+	"github.com/gin-gonic/gin"
 )
 
 const (
 	MaxMessageSize = 64 * 1024 // max message size 64 kb
 )
-
-
 
 type LogEntry struct {
 	Timestamp string            `json:"timestamp" binding:"required"`
@@ -203,10 +201,6 @@ func main() {
 
 	validator := NewLogValidator()
 	router := gin.Default()
-
-	// Replace Gin's default logger with our structured logger or disable it if not needed.
-	// For simplicity, we'll keep Gin's logger for request logging, but our app logs will be structured.
-	// router.Use(gin.Logger())
 
 	router.POST("/log", func(c *gin.Context) {
 		body, err := c.GetRawData()
