@@ -1,6 +1,8 @@
 package config
 
 import (
+	"strings"
+
 	"github.com/spf13/viper"
 )
 
@@ -42,14 +44,21 @@ type StorageWriterConfig struct {
 }
 
 func LoadConfig() (*Config, error) {
+	
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
+	viper.AddConfigPath(".") 
 
+	
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
+
+	
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, err
 	}
 
+	
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, err
