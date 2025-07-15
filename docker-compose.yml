@@ -62,6 +62,8 @@ services:
       - KAFKA_BROKERS=kafka:9092
 
   log-generator:
+    profiles:
+      - tools
     build:
       context: .
       dockerfile: log-generator/Dockerfile
