@@ -77,6 +77,8 @@ services:
     build:
       context: .
       dockerfile: parser/Dockerfile
+    ports:
+      - "8080"
     depends_on:
       kafka:
         condition: service_healthy   
@@ -91,6 +93,8 @@ services:
     build:
       context: .
       dockerfile: storage-writer/Dockerfile
+    ports:
+      - "8080"
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -100,6 +104,36 @@ services:
       - KAFKA_BROKERS=kafka:9092
       - ELASTICSEARCH_URL=http://elasticsearch:9200
 
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/rules.yml:/etc/prometheus/rules.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-lifecycle'
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
+      - ./monitoring/grafana/provisioning.yml:/etc/grafana/provisioning/dashboards/provisioning.yml
+      - grafana_data:/var/lib/grafana
+
 volumes:
   kafka_data:
   esdata:
+  grafana_data:

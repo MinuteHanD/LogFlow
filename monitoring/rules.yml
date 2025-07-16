@@ -1,0 +1,12 @@
+
+groups:
+  - name: example
+    rules:
+      - alert: HighErrorRate
+        expr: rate(errors_total[1m]) > 0.5
+        for: 1m
+        labels:
+          severity: 'critical'
+        annotations:
+          summary: "High error rate detected in {{ $labels.job }}"
+          description: "The error rate for the {{ $labels.job }} job is over 50% for the last minute."

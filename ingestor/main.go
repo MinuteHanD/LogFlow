@@ -14,10 +14,27 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/MinuteHanD/log-pipeline/config"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
 	MaxMessageSize = 64 * 1024 // max message size 64 kb
+)
+
+var (
+	logsReceived = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ingestor_logs_received_total",
+			Help: "Total number of logs received.",
+		},
+	)
+	invalidLogs = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ingestor_invalid_logs_total",
+			Help: "Total number of invalid logs.",
+		},
+	)
 )
 
 type LogEntry struct {
@@ -54,7 +71,7 @@ func NewLogValidator() *LogValidator {
 		"PANIC":   true,
 	}
 
-	timestampRegex := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$`)
+	timestampRegex := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$`) 
 
 	return &LogValidator{
 		validLevels:    validLevels,
@@ -177,6 +194,11 @@ func (v *LogValidator) ValidateComplete(data []byte) ValidationResult {
 	}
 }
 
+func init() {
+	prometheus.MustRegister(logsReceived)
+	prometheus.MustRegister(invalidLogs)
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
@@ -203,6 +225,7 @@ func main() {
 	router := gin.Default()
 
 	router.POST("/log", func(c *gin.Context) {
+		logsReceived.Inc()
 		body, err := c.GetRawData()
 		if err != nil {
 			logger.Error("Failed to read request body", "error", err)
@@ -215,6 +238,7 @@ func main() {
 		validationResult := validator.ValidateComplete(body)
 
 		if !validationResult.IsValid {
+			invalidLogs.Inc()
 			logger.Info("Log validation failed", "validation_errors", validationResult.Errors)
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":             "validation failed",
@@ -260,6 +284,8 @@ func main() {
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	logger.Info("Ingestor service starting", "port", cfg.Ingestor.HTTPPort)
 	if err := router.Run(fmt.Sprintf(":%d", cfg.Ingestor.HTTPPort)); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,10 +17,33 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/MinuteHanD/log-pipeline/config"
 	"github.com/MinuteHanD/log-pipeline/kafka"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
 	ConsumerGroup = "parser-group"
+)
+
+var (
+	logsProcessed = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "parser_logs_processed_total",
+			Help: "Total number of logs processed.",
+		},
+	)
+	logsFailed = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "parser_logs_failed_total",
+			Help: "Total number of logs that failed to be parsed.",
+		},
+	)
+	logsSent = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "parser_logs_sent_total",
+			Help: "Total number of logs successfully sent to the parsed_logs topic.",
+		},
+	)
 )
 
 type IncomingLogEntry struct {
@@ -156,7 +180,11 @@ func generateMessageHash(message string) string {
 	return string(rune(hash))
 }
 
-
+func init() {
+	prometheus.MustRegister(logsProcessed)
+	prometheus.MustRegister(logsFailed)
+	prometheus.MustRegister(logsSent)
+}
 
 func main() {
 
@@ -167,6 +195,14 @@ func main() {
 		logger.Error("Failed to load configuration", "error", err)
 		os.Exit(1)
 	}
+
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		logger.Info("Starting metrics server on port 8080")
+		if err := http.ListenAndServe(":8080", nil); err != nil {
+			logger.Error("Failed to start metrics server", "error", err)
+		}
+	}()
 
 	config := sarama.NewConfig()
 	config.Version = sarama.V2_8_0_0
@@ -254,10 +290,12 @@ func (h *logHandler) Cleanup(_ sarama.ConsumerGroupSession) error {
 
 func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for message := range claim.Messages() {
+		logsProcessed.Inc()
 		h.logger.Info("Received message", "topic", message.Topic, "partition", message.Partition, "offset", message.Offset)
 
 		var incomingLog IncomingLogEntry
 		if err := json.Unmarshal(message.Value, &incomingLog); err != nil {
+			logsFailed.Inc()
 			h.logger.Error("Failed to unmarshal incoming log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
 			kafka.SendToDLQ(h.logger, h.producer, h.cfg.Kafka.Topics.RawDLQ, message, err)
@@ -268,6 +306,7 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 
 		parsedLog, err := h.processor.ProcessLog(incomingLog)
 		if err != nil {
+			logsFailed.Inc()
 			h.logger.Error("Failed to process log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
 			kafka.SendToDLQ(h.logger, h.producer, h.cfg.Kafka.Topics.RawDLQ, message, err)
@@ -278,6 +317,7 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 
 		enrichedLogBytes, err := json.Marshal(parsedLog)
 		if err != nil {
+			logsFailed.Inc()
 			h.logger.Error("Failed to marshal processed log", "error", err, "log_id", parsedLog.ID)
 			session.MarkMessage(message, "")
 			continue
@@ -290,8 +330,10 @@ func (h *logHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sar
 
 		partition, offset, err := h.producer.SendMessage(producerMsg)
 		if err != nil {
+			logsFailed.Inc()
 			h.logger.Error("Failed to send processed log to Kafka", "error", err, "topic", h.cfg.Kafka.Topics.Parsed, "log_id", parsedLog.ID)
 		} else {
+			logsSent.Inc()
 			h.logger.Info("Successfully sent processed log to Kafka", "topic", h.cfg.Kafka.Topics.Parsed, "partition", partition, "offset", offset, "log_id", parsedLog.ID)
 		}
 

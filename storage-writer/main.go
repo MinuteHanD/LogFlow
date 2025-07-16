@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -19,12 +20,33 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/MinuteHanD/log-pipeline/config"
 	"github.com/MinuteHanD/log-pipeline/kafka"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
-
 
 const (
 	ConsumerGroup = "storage-writer-group"
+)
+
+var (
+	logsReceived = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "storage_writer_logs_received_total",
+			Help: "Total number of logs received from the parsed_logs topic.",
+		},
+	)
+	logsStored = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "storage_writer_logs_stored_total",
+			Help: "Total number of logs successfully stored in Elasticsearch.",
+		},
+	)
+	logsFailed = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "storage_writer_logs_failed_total",
+			Help: "Total number of logs that failed to be stored in Elasticsearch.",
+		},
+	)
 )
 
 type ParsedLog struct {
@@ -192,6 +214,12 @@ func (lsp *LogStorageProcessor) ProcessAndStore(messageValue []byte) error {
 	return nil
 }
 
+func init() {
+	prometheus.MustRegister(logsReceived)
+	prometheus.MustRegister(logsStored)
+	prometheus.MustRegister(logsFailed)
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
@@ -200,6 +228,14 @@ func main() {
 		logger.Error("Failed to load configuration", "error", err)
 		os.Exit(1)
 	}
+
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		logger.Info("Starting metrics server on port 8080")
+		if err := http.ListenAndServe(":8080", nil); err != nil {
+			logger.Error("Failed to start metrics server", "error", err)
+		}
+	}()
 
 	esClient, err := elasticsearch.NewClient(elasticsearch.Config{
 		Addresses: []string{cfg.Elasticsearch.URL},
@@ -317,9 +353,11 @@ func (handler *logStorageHandler) Cleanup(_ sarama.ConsumerGroupSession) error {
 
 func (handler *logStorageHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for message := range claim.Messages() {
+		logsReceived.Inc()
 		handler.logger.Info("Received parsed log", "topic", message.Topic, "partition", message.Partition, "offset", message.Offset)
 
 		if err := handler.processor.ProcessAndStore(message.Value); err != nil {
+			logsFailed.Inc()
 			handler.logger.Error("Failed to process and store log", "error", err, "topic", message.Topic, "offset", message.Offset)
 
 			// Send the failed message to the Dead-Letter Queue
@@ -329,6 +367,7 @@ func (handler *logStorageHandler) ConsumeClaim(session sarama.ConsumerGroupSessi
 			continue
 		}
 
+		logsStored.Inc()
 		session.MarkMessage(message, "")
 	}
 

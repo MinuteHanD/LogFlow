@@ -159,8 +159,21 @@ The project includes both unit tests and integration tests, which are separated 
 
 ---
 
+## Monitoring & Observability
+
+The pipeline exposes key operational metrics from each service, which are collected by Prometheus and visualized in a pre-built Grafana dashboard. This provides at-a-glance visibility into:
+
+*   **Ingestor**: Logs received, invalid logs, and successful handoffs to Kafka.
+*   **Parser**: Logs processed and logs sent to the Dead-Letter Queue.
+*   **Storage Writer**: Logs successfully written to Elasticsearch and failures.
+
+Alerting rules are configured in Alertmanager to notify operators of critical issues, such as a high rate of failed logs or services being down.
+
+To view the Grafana dashboard, visit `http://localhost:3000` (default credentials: `admin`/`admin`).
+
+---
+
 ## Future Work
 
-*   **Metrics & Observability**: Expose Prometheus metrics from each service for monitoring and alerting.
 *   **Correlation IDs**: Implement a correlation ID at the `ingestor` and pass it through Kafka headers to trace a single request across all services.
 *   **DLQ Re-processing**: Build a utility or service to consume from the DLQ topics, attempt to re-process messages, and archive unrecoverable ones.
