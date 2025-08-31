@@ -17,8 +17,8 @@ The pipeline follows an asynchronous, multi-stage process. Each service is a dis
 [HTTP Client]───> │ Ingestor │ ───> │  Kafka   │ ───> │  Parser   │ ───> │     Kafka     │
                   └──────────┘      │ raw_logs │      └───────────┘      │  parsed_logs  │
                                     └──────────┘            │            └───────────────┘
-                                                          ▼                     │
-                                                   ┌──────────────┐             ▼
+                                                            ▼                     │
+                                                   ┌──────────────┐               ▼
                                                    │    Kafka     │      ┌────────────────┐
                                                    │ raw_logs_dlq │      │ Storage Writer │
                                                    └──────────────┘      └────────────────┘
